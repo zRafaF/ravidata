@@ -11,14 +11,17 @@ depth map per chosen frame is enough, and many frames of the same view can be co
    from the video times of the radar recordings (``take.json``: beeps + sync; the sync lead-in is skipped).
 2. Each frame: upright, undistorted with the calibration (full 1440 x 1440), the same Log -> display tone curve
    as the pod (``pod/frames.py``).
-3. Depth: a monocular depth model through ``transformers`` on the CPU (default Depth Anything V2 Metric Indoor
-   Small, ~25 M parameters, a few seconds per frame; any ``depth-estimation`` model id works).
+3. Depth: a monocular depth model through ``transformers`` on the CPU: ``--model depthpro`` (default, Apple Depth
+   Pro: metric, sharp object boundaries, about a minute per frame on a CPU), ``da2l`` / ``da2s`` (Depth Anything V2
+   Metric Indoor Large / Small; Small is fast but blurs chairs and loses the brooms) or any ``depth-estimation``
+   model id.
 4. Grounding: every AprilTag (tag36h11, printed sizes in ``docs/protocols/targets/tags.json``) is located with
-   solvePnP (IPPE_SQUARE); a 5 x 5 grid of points on each tag gives true depths; the model's depth there is fitted
-   by a scale (``--fit scale``, default) or scale + offset (``--fit affine``); the residual per tag is reported
-   (leave-one-tag-out as well, so the check is honest).
+   solvePnP (IPPE_SQUARE); a 5 x 5 grid of points on each tag gives true depths; scale = median over tags of
+   (true / model depth) (``--fit scale``, default) or scale + offset by least squares (``--fit affine``). Broom tags
+   (20, 21, 50, 51) are reported but not used for the fit: the handles are too thin for the models. The residual
+   per tag is reported (leave-one-tag-out as well, so the check is honest).
 
-Outputs in ``data/ravidata/derived/static-depth-v1/<take>/``: per frame ``<part>_<t>.npz`` (metric depth 720 x 720
+Outputs in ``data/ravidata/derived/static-depth-v1/<model>/<take>/``: per frame ``<part>_<t>.npz`` (metric depth 720 x 720
 float16, K, model, fit, tags) + ``.jpg`` + ``.ply`` (coloured points, opens in CloudCompare / MeshLab), and
 ``summary.json`` (fit and per-tag errors of every frame).
 """
@@ -38,7 +41,13 @@ sys.path.insert(0, str(ROOT / "pod"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import frames as F  # noqa: E402  (pod/frames.py: upright, calib_for, tone_params, tone)
 
-DEFAULT_MODEL = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf"
+DEFAULT_MODEL = "depthpro"
+MODELS = {                                          # short name -> transformers model id
+    "da2s": "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf",   # ~25 M params, seconds per frame, blurry
+    "da2l": "depth-anything/Depth-Anything-V2-Metric-Indoor-Large-hf",   # ~335 M params
+    "depthpro": "apple/DepthPro-hf",                                     # sharp boundaries, metric, ~1 min / frame CPU
+}
+THIN_TAGS = {20, 21, 50, 51}                        # tags on the brooms: the handle is too thin for a depth model
 
 
 def part_times(take: dict, per_part: int, offset: float) -> list[tuple[str, float]]:
@@ -121,29 +130,34 @@ def sample(depth: np.ndarray, uv: np.ndarray) -> np.ndarray:
     return m.ravel()
 
 
-def fit(tags: list[dict], depth: np.ndarray, mode: str) -> tuple[tuple[float, float], list[dict]]:
+def fit(tags: list[dict], depth: np.ndarray, mode: str, exclude=THIN_TAGS) -> tuple[tuple[float, float], list[dict]]:
     """depth_metric = a * depth_model + b (b = 0 for "scale"); per tag the relative error with the fit on all tags
-    and leave-one-tag-out."""
+    and leave-one-tag-out. Scale = median of the per-tag ratios (one vote per tag, robust to one bad tag); tags in
+    `exclude` (thin objects the model cannot resolve) are reported but not used, unless they are all there is."""
+    def ratio(t):
+        m = np.isfinite(t["d"]) & (t["d"] > 0)
+        return float(np.median(t["z"][m] / t["d"][m])) if m.sum() >= 5 else np.nan
+
     def solve(ts):
+        ts = [t for t in ts if np.isfinite(ratio(t))]
         if not ts:
             return None
-        z = np.concatenate([t["z"] for t in ts]); d = np.concatenate([t["d"] for t in ts])
-        m = np.isfinite(d) & (d > 0)
-        if m.sum() < 5:
-            return None
         if mode == "affine" and len({t["id"] for t in ts}) >= 2:
+            z = np.concatenate([t["z"] for t in ts]); d = np.concatenate([t["d"] for t in ts])
+            m = np.isfinite(d) & (d > 0)
             A = np.stack([d[m], np.ones(m.sum())], 1)
             return tuple(np.linalg.lstsq(A, z[m], rcond=None)[0])
-        return (float(np.median(z[m] / d[m])), 0.0)
+        return (float(np.median([ratio(t) for t in ts])), 0.0)
 
     for t in tags:
         t["d"] = sample(depth, t["uv"])
-    ab = solve(tags)
+    used = [t for t in tags if t["id"] not in exclude] or tags
+    ab = solve(used)
     rows = []
     if ab is None:
         return (np.nan, np.nan), rows
     for t in tags:
-        others = [u for u in tags if u is not t]
+        others = [u for u in used if u is not t]
         ab_loo = solve(others) if others else None
         def err(p):
             if p is None:
@@ -151,8 +165,8 @@ def fit(tags: list[dict], depth: np.ndarray, mode: str) -> tuple[tuple[float, fl
             pred = p[0] * t["d"] + p[1]
             m = np.isfinite(pred)
             return float(np.median(np.abs(pred[m] - t["z"][m]) / t["z"][m])) if m.any() else None
-        rows.append({"id": t["id"], "distance_m": round(t["distance_m"], 3), "rel_err": err(ab),
-                     "rel_err_leave_one_out": err(ab_loo)})
+        rows.append({"id": t["id"], "distance_m": round(t["distance_m"], 3), "ratio": ratio(t),
+                     "used_in_fit": t in used, "rel_err": err(ab), "rel_err_leave_one_out": err(ab_loo)})
     return ab, rows
 
 
@@ -172,7 +186,8 @@ def main(argv=None):
     ap.add_argument("--data", default=str(ROOT / "data" / "ravidata"))
     ap.add_argument("--take", default="static_pass1", help="a static take, or 'all' (both passes + the pilot)")
     ap.add_argument("--per-part", type=int, default=5, help="frames per part (S0, S1, S2)")
-    ap.add_argument("--model", default=DEFAULT_MODEL, help="a transformers depth-estimation model id")
+    ap.add_argument("--model", default=DEFAULT_MODEL,
+                    help=f"short name ({', '.join(MODELS)}) or any transformers depth-estimation model id")
     ap.add_argument("--fit", choices=("scale", "affine"), default="scale")
     ap.add_argument("--out-res", type=int, default=720)
     a = ap.parse_args(argv)
@@ -187,7 +202,9 @@ def main(argv=None):
     if not video.exists():
         raise SystemExit(f"{video} missing: uv run hf download DoninhaD/ravidata --repo-type dataset "
                          f"--local-dir data/ravidata --include \"takes/{a.take}/*\" --include \"calibration/*\"")
-    out = data / "derived" / "static-depth-v1" / a.take
+    short = a.model if a.model in MODELS else a.model.split("/")[-1]
+    a.model = MODELS.get(a.model, a.model)
+    out = data / "derived" / "static-depth-v1" / short / a.take
     out.mkdir(parents=True, exist_ok=True)
     offset = float(take["sync"].get("recommended_video_offset_s", 0.0))
     picks = part_times(take, a.per_part, offset)
@@ -245,7 +262,9 @@ def main(argv=None):
         rows.append({"frame": name, "part": part, "t_video": round(t, 3), "tags": tag_rows, "a": sa, "b": sb,
                      "grounded": how, "seconds": round(secs, 1)})
         print(f"  {name}: scale {sa:.3f}" + (f" offset {sb:+.3f}" if a.fit == "affine" else "") + f" [{how}]"
-              + (f", leave-one-tag-out error median {np.median(errs) * 100:.1f} %" if errs else ""), flush=True)
+              + (f", leave-one-tag-out error median {np.median(errs) * 100:.1f} %" if errs else "")
+              + ("; true/model per tag " + " ".join(f"{r['id']}{'' if r['used_in_fit'] else '*'}:{r['ratio']:.2f}"
+                                                     for r in tag_rows) if tag_rows else ""), flush=True)
     summary = {"take": a.take, "model": a.model, "fit": a.fit, "per_part": a.per_part, "frames": rows,
                "how": "depth_metric = a * depth_model + b, fitted on 5 x 5 points per AprilTag (solvePnP, IPPE_SQUARE)"}
     (out / "summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")

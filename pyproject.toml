@@ -39,8 +39,15 @@ dev = [
 viz = [
     "viser>=1.1",                       # scripts/map_viz.py (3D viewer in the browser)
 ]
+analysis = [                            # analysis/ (radar analyses, optimisation, plots)
+    "pandas>=2.2",
+    "pyarrow>=15",
+    "matplotlib>=3.8",
+    "tqdm>=4.66",                         # progress bars
+]
 depth = [                               # scripts/static_depth.py (monocular depth on the CPU)
     "torch>=2.4",
+    "torchvision>=0.19",                  # Depth Pro's image processor needs it
     "transformers>=4.45",
     "pillow>=10",
 ]

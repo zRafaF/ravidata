@@ -25,7 +25,7 @@ repository holds the tools to record, align and analyse the data, and to rebuild
 | record | PC + radar + phone | `make rec` |
 | build the public dataset (owners) | PC, CPU | `make dataset`, `make dataset-upload` |
 | **maps (the only GPU step)** | rented GPU pod | `make pod` |
-| analysis and scoring | PC, CPU | `make maps`, then the analysis tools |
+| analysis and scoring | PC, CPU | `make maps`, `make fuse`, `make analysis-quick`, `make analysis`, `make plots` |
 
 The pod does nothing but turn video into maps: it downloads only the two carried videos and the calibration, runs
 the models, uploads the results to the dataset and **stops itself**. Everything that only needs a CPU happens on
@@ -72,9 +72,14 @@ written and will be added here as a `make` target.
 
 ## Detection baselines
 
-`src/ravidata/processing/detectors.py` holds the public baselines: a fixed threshold and CA / OS-CFAR along range,
-both reporting the nearest return; `make rec` shows them live. A range-Doppler CFAR and the occupancy grid
-(floating point and CORDIC fixed point) will be added with the thesis, with a comparison table on RAVIDATA.
+`src/ravidata/processing/detectors.py` holds the recording app's baselines: a fixed threshold and CA / OS-CFAR
+along range, both reporting the nearest return; `make rec` shows them live.
+
+`analysis/` scores these and more (threshold, CA / GO / SO / OS-CFAR, range-Doppler CFAR, CFAR + DBSCAN, a
+log-odds occupancy grid alone / moved with the IMU / moved with the map trajectory) against ground truth from the
+AprilTags and the feed-forward maps, tunes every family with a multi-objective search, measures how well one
+setting generalises across scenes, characterises the sensor and checks a fixed-point CORDIC against float64.
+Steps write tables; figures are drawn from the tables. See [docs/analysis.md](docs/analysis.md).
 
 ## Using the dataset (any PC)
 

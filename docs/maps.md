@@ -129,18 +129,26 @@ In the viewer, **View → Fuse this model + take (TSDF)** runs the same thing fo
 (2–3 min, progress in the panel) and shows the result. Point size goes up to 0.3 and the pixel stride down to 1
 for far, sparse scenes.
 
-### Static takes: monocular depth on the CPU (`make static-depth TAKE=static_pass1`)
+### Static takes: monocular depth on the CPU (`make static-depth TAKE=all`)
 
 The camera does not move in the static takes, so no multi-view reconstruction is needed: `scripts/static_depth.py`
-runs a monocular depth model on the CPU (default Depth Anything V2 Metric Indoor Small via `transformers`; any
-`depth-estimation` model id) on a few frames per part (S0 / S1 / S2), on the same undistorted, tone-mapped frames
-as the pod, and grounds each depth map on the AprilTags: each tag located by solvePnP (IPPE_SQUARE, printed size),
-a 5 × 5 grid of true depths per tag, fitted by a scale (or scale + offset, `--fit affine`); per tag the error with
-all tags and leave-one-tag-out. Frames without tags (S0, the empty scene) take the take's median scale (the camera
-is still). Tags found in static_pass1 S1: 13 (1.29 m), 20 (1.83 m), 21 (1.97 m), 15 (3.75 m) — stable to 1 cm
-between frames. Outputs: `derived/static-depth-v1/<take>/` (`.npz` metric depth, `.jpg`, `.ply`, `summary.json`).
-`TAKE=all` = both passes + the pilot. Needs the static takes downloaded (`make data DATA_TAKES="static_pass1
-static_pass2 pilot_chairs"`) and `uv sync --group depth` (PyTorch CPU + transformers).
+runs a monocular depth model on the CPU (`DEPTH_MODEL=depthpro`, Apple Depth Pro, default; `da2l` / `da2s`, Depth
+Anything V2 Metric Indoor Large / Small; any `depth-estimation` model id) on a few frames per part (S0 / S1 / S2),
+on the same undistorted, tone-mapped frames as the pod, and grounds each depth map on the AprilTags: each tag
+located by solvePnP (IPPE_SQUARE, printed size), a 5 × 5 grid of true depths per tag; scale = median over tags of
+true / model depth (or scale + offset, `--fit affine`); per tag the ratio, the error with all tags and
+leave-one-tag-out. Broom tags (20, 21, 50, 51) are reported but not used for the scale: the handles are too thin
+for the models. Frames without tags (S0, the empty scene) take the take's median scale (the camera is still).
+Outputs: `derived/static-depth-v1/<model>/<take>/` (`.npz` metric depth, `.jpg`, `.ply`, `summary.json`);
+`make static-depth-upload` puts them on the dataset. The radar ground truth (`docs/analysis.md`) uses the best
+model present (depthpro, then da2l, then da2s). Needs the static takes downloaded (`make data DATA_TAKES="static_pass1
+static_pass2 pilot_chairs"`); `uv run --group depth` installs PyTorch CPU + transformers on first use.
+
+First run, Depth Anything V2 Small (preliminary): the model's depth is 1.4-2.6× too far before the tag scale
+(scale 0.39-0.72 depending on the part); after scaling, the chairs agree with their tags within a few per cent
+when the brooms are left out, but the brooms vanish into the wall behind them (static_pass1 S1, scale fitted on
+all tags: depth / tag distance 0.80-0.81 at the chairs, 1.33-1.39 at the brooms) and object edges are soft. Hence
+Depth Pro as the default.
 
 Preliminary: these are self-consistency figures, not accuracy. The chained paths of the models still differ by
 1–2 m RMS over a whole course after a similarity fit (drift of the chaining). Accuracy needs the AprilTag check
