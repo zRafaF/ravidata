@@ -1,0 +1,194 @@
+{
+ "family": "tag36h11",
+ "size_convention": "edge of the black square (8 of the 10 cells incl. quiet zone)",
+ "printed": "docs/protocols/targets/apriltags_A4.pdf",
+ "tags": {
+  "0": {
+   "family": "tag36h11",
+   "size_mm": 150.0,
+   "use": "person's chest (front/back), large board"
+  },
+  "1": {
+   "family": "tag36h11",
+   "size_mm": 150.0,
+   "use": "person's chest (front/back), large board"
+  },
+  "2": {
+   "family": "tag36h11",
+   "size_mm": 150.0,
+   "use": "person's chest (front/back), large board"
+  },
+  "10": {
+   "family": "tag36h11",
+   "size_mm": 90.0,
+   "use": "panel, chair, head-height board, wall, floor marks"
+  },
+  "11": {
+   "family": "tag36h11",
+   "size_mm": 90.0,
+   "use": "panel, chair, head-height board, wall, floor marks"
+  },
+  "12": {
+   "family": "tag36h11",
+   "size_mm": 90.0,
+   "use": "panel, chair, head-height board, wall, floor marks"
+  },
+  "13": {
+   "family": "tag36h11",
+   "size_mm": 90.0,
+   "use": "panel, chair, head-height board, wall, floor marks"
+  },
+  "14": {
+   "family": "tag36h11",
+   "size_mm": 90.0,
+   "use": "panel, chair, head-height board, wall, floor marks"
+  },
+  "15": {
+   "family": "tag36h11",
+   "size_mm": 90.0,
+   "use": "panel, chair, head-height board, wall, floor marks"
+  },
+  "16": {
+   "family": "tag36h11",
+   "size_mm": 90.0,
+   "use": "panel, chair, head-height board, wall, floor marks"
+  },
+  "17": {
+   "family": "tag36h11",
+   "size_mm": 90.0,
+   "use": "panel, chair, head-height board, wall, floor marks"
+  },
+  "20": {
+   "family": "tag36h11",
+   "size_mm": 55.0,
+   "use": "broom (on a flat card like a flag), can stand, small objects"
+  },
+  "21": {
+   "family": "tag36h11",
+   "size_mm": 55.0,
+   "use": "broom (on a flat card like a flag), can stand, small objects"
+  },
+  "22": {
+   "family": "tag36h11",
+   "size_mm": 55.0,
+   "use": "broom (on a flat card like a flag), can stand, small objects"
+  },
+  "23": {
+   "family": "tag36h11",
+   "size_mm": 55.0,
+   "use": "broom (on a flat card like a flag), can stand, small objects"
+  },
+  "24": {
+   "family": "tag36h11",
+   "size_mm": 55.0,
+   "use": "broom (on a flat card like a flag), can stand, small objects"
+  },
+  "25": {
+   "family": "tag36h11",
+   "size_mm": 55.0,
+   "use": "broom (on a flat card like a flag), can stand, small objects"
+  },
+  "26": {
+   "family": "tag36h11",
+   "size_mm": 55.0,
+   "use": "broom (on a flat card like a flag), can stand, small objects"
+  },
+  "27": {
+   "family": "tag36h11",
+   "size_mm": 55.0,
+   "use": "broom (on a flat card like a flag), can stand, small objects"
+  },
+  "28": {
+   "family": "tag36h11",
+   "size_mm": 55.0,
+   "use": "broom (on a flat card like a flag), can stand, small objects"
+  },
+  "29": {
+   "family": "tag36h11",
+   "size_mm": 55.0,
+   "use": "broom (on a flat card like a flag), can stand, small objects"
+  },
+  "30": {
+   "family": "tag36h11",
+   "size_mm": 55.0,
+   "use": "broom (on a flat card like a flag), can stand, small objects"
+  },
+  "31": {
+   "family": "tag36h11",
+   "size_mm": 55.0,
+   "use": "broom (on a flat card like a flag), can stand, small objects"
+  },
+  "40": {
+   "family": "tag36h11",
+   "size_mm": 40.0,
+   "use": "can, very small objects, close range only"
+  },
+  "41": {
+   "family": "tag36h11",
+   "size_mm": 40.0,
+   "use": "can, very small objects, close range only"
+  },
+  "42": {
+   "family": "tag36h11",
+   "size_mm": 40.0,
+   "use": "can, very small objects, close range only"
+  },
+  "43": {
+   "family": "tag36h11",
+   "size_mm": 40.0,
+   "use": "can, very small objects, close range only"
+  },
+  "44": {
+   "family": "tag36h11",
+   "size_mm": 40.0,
+   "use": "can, very small objects, close range only"
+  },
+  "45": {
+   "family": "tag36h11",
+   "size_mm": 40.0,
+   "use": "can, very small objects, close range only"
+  },
+  "46": {
+   "family": "tag36h11",
+   "size_mm": 40.0,
+   "use": "can, very small objects, close range only"
+  },
+  "47": {
+   "family": "tag36h11",
+   "size_mm": 40.0,
+   "use": "can, very small objects, close range only"
+  },
+  "48": {
+   "family": "tag36h11",
+   "size_mm": 40.0,
+   "use": "can, very small objects, close range only"
+  },
+  "49": {
+   "family": "tag36h11",
+   "size_mm": 40.0,
+   "use": "can, very small objects, close range only"
+  },
+  "50": {
+   "family": "tag36h11",
+   "size_mm": 40.0,
+   "use": "can, very small objects, close range only"
+  },
+  "51": {
+   "family": "tag36h11",
+   "size_mm": 40.0,
+   "use": "can, very small objects, close range only"
+  }
+ },
+ "checkerboard": {
+  "squares": [
+   10,
+   7
+  ],
+  "inner_corners": [
+   9,
+   6
+  ],
+  "square_mm": 25.0,
+  "printed": "docs/protocols/targets/checkerboard_A4.pdf"
+ }
+}

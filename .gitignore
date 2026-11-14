@@ -1,0 +1,24 @@
+# Python / uv
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# recordings and everything generated (the data live on Hugging Face)
+runs/
+data/
+work/
+dataset/
+*.nsscan.npz
+
+# GPU pod: cloned model repos + their environments
+pod/third_party/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

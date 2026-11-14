@@ -1,0 +1,56 @@
+{
+ "date": "2026-11-13",
+ "family": "tag36h11",
+ "size_convention": "edge of the black square, as in tags.json",
+ "note": "The AprilTags actually placed in the 2026-11-13 recordings (owner). Every other ID of tags.json / apriltags_A4.pdf was printed but not used. Groups: person 0 (chest) and 1 (back); floor 10, 12, 17; chairs 11, 13, 15; broom 20, 21, 50, 51.",
+ "tags": {
+  "0": {
+   "on": "person, chest (front)",
+   "size_mm": 150.0
+  },
+  "1": {
+   "on": "person, back",
+   "size_mm": 150.0
+  },
+  "10": {
+   "on": "floor",
+   "size_mm": 90.0
+  },
+  "11": {
+   "on": "chair",
+   "size_mm": 90.0
+  },
+  "12": {
+   "on": "floor",
+   "size_mm": 90.0
+  },
+  "13": {
+   "on": "chair",
+   "size_mm": 90.0
+  },
+  "15": {
+   "on": "chair",
+   "size_mm": 90.0
+  },
+  "17": {
+   "on": "floor",
+   "size_mm": 90.0
+  },
+  "20": {
+   "on": "broom",
+   "size_mm": 55.0
+  },
+  "21": {
+   "on": "broom",
+   "size_mm": 55.0
+  },
+  "50": {
+   "on": "broom",
+   "size_mm": 40.0
+  },
+  "51": {
+   "on": "broom",
+   "size_mm": 40.0
+  }
+ }
+}
