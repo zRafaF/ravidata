@@ -2,7 +2,7 @@
 # `make` and `git` are the only other things a machine needs (`apt-get install -y make` on a fresh pod).
 # Code: https://github.com/zRafaF/ravidata   Data: https://huggingface.co/datasets/DoninhaD/ravidata
 .PHONY: help install test rec rec-sim align pack calib targets data dataset dataset-upload \
-        maps pod pod-test pod-status pod-watch pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
+        maps viz pod pod-test pod-status pod-watch pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
 
 HF_REPO ?= DoninhaD/ravidata
 TAKES   ?= indoor_course outdoor_course
@@ -45,7 +45,10 @@ help:
 	@echo "             HF_TOKEN=<write token> to upload results to derived/maps-$(TAG)/"
 	@echo ""
 	@echo "  back on your PC (CPU):"
-	@echo "  make maps             download the pod's maps (derived/maps-$(TAG)) to data/ravidata"
+	@echo "  make maps             download the pod's maps (derived/maps-$(TAG)) + the course videos to data/ravidata,"
+	@echo "                        and re-make the exact keyframe images the models saw (for colours)"
+	@echo "  make viz              3D viewer of the maps in the browser: whole take, one window, two windows,"
+	@echo "                        compare models, measure (VIZ_ARGS=\"--model vggt --take outdoor_course\"): docs/maps.md"
 
 $(UV):
 	curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -79,8 +82,21 @@ data: install
 	$(UV) run hf download $(HF_REPO) --repo-type dataset --local-dir data/ravidata \
 	  $(if $(DATA_TAKES),$(foreach t,$(DATA_TAKES),--include "takes/$(t)/*") --include "calibration/*" --include "*.json" --include "README.md",)
 
+MAPS := data/ravidata/derived/maps-$(TAG)
 maps: install
-	$(UV) run hf download $(HF_REPO) --repo-type dataset --local-dir data/ravidata --include "derived/maps-$(TAG)/*"
+	$(UV) run hf download $(HF_REPO) --repo-type dataset --local-dir data/ravidata \
+	  --include "derived/maps-$(TAG)/*" --include "calibration/camera.calib.json" \
+	  $(foreach t,$(TAKES),--include "takes/$(t)/video.mp4" --include "takes/$(t)/take.json")
+	@for t in $(TAKES); do \
+	  if [ -f "$(MAPS)/frames_$$t.json" ] && [ ! -f "$(MAPS)/frames/$$t/frames.json" ]; then \
+	    $(UV) run python pod/frames.py --data data/ravidata --take $$t --out "$(MAPS)/frames/$$t" \
+	      --from-json "$(MAPS)/frames_$$t.json" || exit 1; \
+	  fi; \
+	done
+
+VIZ_ARGS ?=
+viz:                                   # plain `uv`: also works from PowerShell with GNU make
+	uv run --group viz python scripts/map_viz.py $(VIZ_ARGS)
 
 dataset: install
 	$(UV) run python scripts/hf_dataset.py all

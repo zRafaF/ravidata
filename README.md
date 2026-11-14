@@ -116,7 +116,8 @@ make pod-status  # progress, from a second tmux window
 
 Full runbook (pod settings, tokens, stages, monitoring, a tmux cheat-sheet, troubleshooting):
 [docs/pod.md](docs/pod.md). Models, frame selection, the measured memory / time and the running metrics:
-[docs/maps.md](docs/maps.md). Back on the PC: `make maps`.
+[docs/maps.md](docs/maps.md). Back on the PC: `make maps`, then the 3D viewer
+`uv run --group viz python scripts/map_viz.py`.
 
 ## Recording
 

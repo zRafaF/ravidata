@@ -48,6 +48,84 @@ depend on it):
 
 The full-run figures are in `derived/maps-v1/` (`run.json`, `metrics/`).
 
+## Full run on the RTX 3090 (`derived/maps-v1`, 2026-11-14) — first look, preliminary
+
+Both carried takes, 1573 keyframes (832 indoor, 741 outdoor; 2069–2077 processed with the window overlaps).
+Run stage 45 min for the four models.
+
+| model | wall time | model s / frame | load | peak GPU memory | GPU energy | J / frame |
+|---|---|---|---|---|---|---|
+| MapAnything | 14.2 min | 0.369 | 32 s | 21.4 GB | 159 kJ | 77 |
+| Pi3X | 8.5 min | 0.201 | 21 s | 18.5 GB | 136 kJ | 65 |
+| Depth Anything 3 | 10.3 min | 0.251 | 24 s | 19.7 GB | 170 kJ | 82 |
+| VGGT | 11.8 min | 0.301 | 24 s | 14.7 GB | 199 kJ | 96 |
+
+Energy = sum of the 1 s nvidia-smi power samples during each run (model loading included).
+
+Window chaining consistency with the first, non-robust chaining (how well consecutive windows agree on their
+shared keyframes after a scale + rigid fit on all of them; median over the window pairs; superseded by the robust
+chaining below):
+
+| model | indoor: position / rotation | outdoor: position / rotation |
+|---|---|---|
+| MapAnything | 0.44 m / 6.3° | 0.23 m / 1.0° |
+| Pi3X | **0.03 m / 0.64°** | **0.05 m / 0.25°** |
+| Depth Anything 3 | 0.07 m / 0.78° | 0.08 m / 0.41° |
+| VGGT | 0.16 / 4.9° (model units) | 0.13 / 1.6° (model units) |
+
+Batch by batch (indoor course, 2026-11-14; `window_consistency`: a frame's depth re-projected 3 keyframes ahead
+with the window's own poses, median relative difference):
+
+| model | inside a window: median / worst | robust join: shared keyframes that agree (median of 12) |
+|---|---|---|
+| MapAnything | 5.0 % / 19.4 % | 3 |
+| Pi3X | **0.7 % / 1.5 %** | **12** |
+| Depth Anything 3 | 1.4 % / 13.5 % | 10 |
+| VGGT | 3.9 % / 28.0 % | 4 |
+
+So the batches themselves are consistent (Pi3X especially); the bad global maps came from the joins. A single
+keyframe that the two windows reconstruct differently (one turned 65° in one window and 135° in the other) used
+to drag the whole join. The chaining is now robust: every shared keyframe proposes a transform, the one most
+others agree with wins (camera within 5 % of the scene depth and 5°), and it is refitted on those frames only.
+With that, Pi3X's worst join went from 3.8 m / 64° to 0.09 m / 2.2° (indoor). MapAnything and VGGT still
+disagree between windows (few agreeing frames): their maps stay poor however they are joined. The joins accumulate
+drift over a whole course; a global fit (pose graph, or the tags) is the next step.
+
+Preliminary: these are self-consistency figures, not accuracy. The chained paths of the models still differ by
+1–2 m RMS over a whole course after a similarity fit (drift of the chaining). Accuracy needs the AprilTag check
+(floor tags 10 / 12 / 17 for scale, the others held out) — still to do.
+
+## Viewing the maps: `scripts/map_viz.py`
+
+```bash
+uv run --group viz python scripts/map_viz.py     # opens http://localhost:8080 ; --model / --take / --port
+```
+
+(`make viz` on Linux.) The first time per take it re-makes the keyframe images from the course video (exactly the
+pod's frames, for the colours). In the browser panel:
+
+- **View → Show**: *whole take (chained)*; *one window* — one batch exactly as the model returned it, in its own
+  frame, to see whether the model is consistent inside a batch; *two windows (overlap)* — window N (red) and N+1
+  (blue) as the chaining placed them, to see whether a join is what breaks the map. The panel gives each window's
+  self-consistency and, for a join, how many shared keyframes agree; *◀ previous / next ▶* steps through the
+  batches, and the info box lists the worst joins. *Chaining*: camera poses (default) or dense points.
+- **Data**: take and model; the info box gives the windows, keyframes, units, camera path length, the chaining
+  consistency above and the pod's numbers (time, peak memory, frames/s).
+- **Points**: keyframe step, pixel stride (point budget), drop the lowest-confidence pixels (per frame percentile),
+  max depth, remove flying pixels at depth edges, colour by image / depth / height / window, point size. Heavy
+  changes apply with **Apply**.
+- **Cameras**: the camera path, frustums every N keyframes, with their images.
+- **Compare models**: the paths of all models, each aligned to the current one (similarity fit on the shared
+  keyframes), with their RMS difference and scale.
+- **Measure**: *Start measuring*, then click points in the scene (a click snaps to the nearest map point along the
+  clicked ray). Two-point mode or polyline (running total). Each measurement is drawn with its length and listed
+  with its vertical and horizontal parts; *Undo last point*, *Clear all*; every measurement is appended to
+  `derived/maps-v1/measurements.csv`. Units are metres for the metric models (VGGT: arbitrary). Quick scale check:
+  measure the edge of a printed AprilTag (40 / 55 / 90 / 150 mm).
+
+Memory: one model and take in full (~1 GB for the 48-frame models); the other models' paths are loaded without
+their depth maps.
+
 ## Running metrics (kept unfiltered)
 
 Per model and take, `run.json`:

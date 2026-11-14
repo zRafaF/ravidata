@@ -143,19 +143,28 @@ def main(argv=None):
     ap.add_argument("--res", type=int, default=518, help="output size (square; 518 = 37 x 14 for ViT patch 14)")
     ap.add_argument("--max-frames", type=int, default=0, help="stop after N written frames (tests)")
     ap.add_argument("--video", help="override the video path (default <data>/takes/<take>/video.mp4)")
+    ap.add_argument("--from-json", help="re-make exactly the keyframes listed in this frames.json (same video frames, "
+                    "same tone curve), e.g. on the PC from the pod's frames_<take>.json")
     a = ap.parse_args(argv)
     data, out = Path(a.data), Path(a.out)
     video = Path(a.video) if a.video else data / "takes" / a.take / "video.mp4"
     (out / "rgb").mkdir(parents=True, exist_ok=True)
-    tp = tone_params(video)
-    gate = MotionGate(a.min_flow, a.min_gap, a.max_gap, a.blur_ratio) if a.select == "motion" else None
+    ref = json.loads(Path(a.from_json).read_text(encoding="utf-8")) if a.from_json else None
+    wanted = {f["video_frame"]: f["i"] for f in ref["frames"]} if ref else {}
+    tp = ref["tone"] if ref else tone_params(video)
+    gate = MotionGate(a.min_flow, a.min_gap, a.max_gap, a.blur_ratio) if (a.select == "motion" and not ref) else None
     frames, K_out, maps, n_video = [], None, None, 0
     with av.open(str(video)) as c:
         vs = c.streams.video[0]
         vs.thread_type = "AUTO"
         for i, fr in enumerate(c.decode(vs)):
             n_video = i + 1
-            if i % a.step:
+            if ref is not None:
+                if i not in wanted:
+                    if i > max(wanted):
+                        break
+                    continue
+            elif i % a.step:
                 continue
             rot = int(round(getattr(fr, "rotation", 0) or 0))
             img = upright(fr.to_ndarray(format="rgb24"), rot)
@@ -175,7 +184,7 @@ def main(argv=None):
                 K_out[:2] *= a.res / W
             img = cv2.remap(img, maps[0], maps[1], cv2.INTER_LINEAR)
             img = cv2.resize(tone(img, tp), (a.res, a.res), interpolation=cv2.INTER_AREA)
-            k = len(frames)
+            k = wanted[i] if ref is not None else len(frames)
             cv2.imwrite(str(out / "rgb" / f"{k:06d}.jpg"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR),
                         [cv2.IMWRITE_JPEG_QUALITY, 95])
             frames.append({"i": k, "video_frame": i, "t_video": t,
@@ -183,6 +192,10 @@ def main(argv=None):
                            **({} if np.isnan(sharp) else {"sharpness": round(sharp, 1)})})
             if a.max_frames and len(frames) >= a.max_frames:
                 break
+    if ref is not None:                          # same list as the pod's, the JPEGs re-made here
+        (out / "frames.json").write_text(json.dumps(ref, indent=1), encoding="utf-8")
+        print(f"{a.take}: {len(frames)} of {len(wanted)} keyframes re-made -> {out}")
+        return
     sel = ({"select": "motion", "min_flow": a.min_flow, "min_gap_s": a.min_gap, "max_gap_s": a.max_gap,
             "blur_ratio": a.blur_ratio, "candidates": gate.n_candidates, "skipped_blurry": gate.n_blurry}
            if gate is not None else {"select": "step"})
