@@ -549,6 +549,22 @@ def presets() -> dict[str, RadarConfig]:
         "a long range): 2.8 cm bins, 14.3 m (IF high-pass ~0.72 m), 8 intervals (v_res 50 cm/s), 48 KB, 12.5 fps. SPI.",
         fft_mode=2, freq_start_mhz=58_000, range_max_mm=14336, range_res_mm=28, chirp_num=1,
         veloc_max_mm_s=2000, veloc_res_mm_s=500, dop_fft=True, frame_period_ms=80, link="spi")
+    # 2026-09-30 regulatory candidates (Anatel Ato 14448 reading, to be confirmed at the pre-scan):
+    # the Doppler burst is K x interval spacing ~ lambda / (2 v_res), so the burst limit is a v_res limit.
+    P["reg-c-2d-40mm-k8"] = RadarConfig(
+        name="reg-c-2d-40mm-k8", notes="Reg. option C: 4 cm bins, 5.12 m, 8 intervals (v_res 0.5 m/s, burst ~3-4 ms), "
+        "40 ms, TX -3 dB (tx_rf_att 3, ~14 dBm EIRP). Sweeps to ~62.8 GHz. SPI.",
+        fft_mode=2, freq_start_mhz=58_000, range_max_mm=5120, range_res_mm=40, chirp_num=1,
+        veloc_max_mm_s=2000, veloc_res_mm_s=500, dop_fft=True, frame_period_ms=40, tx_rf_att_db=3, link="spi")
+    P["reg-a-2d-56mm-k16"] = RadarConfig(
+        name="reg-a-2d-56mm-k16", notes="Reg. option A: 5.6 cm bins (B 2.68 GHz, sweep ends ~61.44 GHz < 61.56), 7.17 m, "
+        "16 intervals (burst ~9.4 ms), 40 ms, full power (17 dBm). SPI.",
+        fft_mode=2, freq_start_mhz=58_000, range_max_mm=7168, range_res_mm=56, chirp_num=1,
+        veloc_max_mm_s=2000, veloc_res_mm_s=250, dop_fft=True, frame_period_ms=40, link="spi")
+    P["reg-c-1d-15m"] = RadarConfig(
+        name="reg-c-1d-15m", notes="Reg. option C: fine-1d-15m with TX -3 dB (tx_rf_att 3, ~14 dBm); burst 0.25 ms.",
+        fft_mode=1, freq_start_mhz=58_000, range_max_mm=14336, range_res_mm=28, chirp_num=4,
+        frame_period_ms=40, tx_rf_att_db=3, link="spi")
     P["doppler-2d-spi"] = RadarConfig(
         name="doppler-2d-spi", notes="SPI-sized range-Doppler: 10 cm bins (N=64), 32 intervals, v_max 2 m/s "
         "(v_res 12.5 cm/s); 24.6 KB cube. Needs link='spi' (P1812).",
@@ -577,7 +593,7 @@ def presets() -> dict[str, RadarConfig]:
         name="tcc-2d-40mm-k8", notes="tcc-2d-40mm with 8 Doppler intervals (v_res 0.5 m/s): half the cube, 20 fps. SPI.",
         fft_mode=2, freq_start_mhz=58_000, range_max_mm=5120, range_res_mm=40, chirp_num=1,
         veloc_max_mm_s=2000, veloc_res_mm_s=500, dop_fft=True, frame_period_ms=50, link="spi")
-    try:                                   # private presets (product / regulatory): not in the public repo
+    try:                                   # private presets (the product's legacy firmware): not public
         from .presets_private import private_presets
         P.update(private_presets())
     except ImportError:

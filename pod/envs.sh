@@ -39,6 +39,7 @@ case "$m" in
     torch_cu128 "$d/.venv"          # in case the package pulled another torch
     uv pip install --python "$d/.venv" --index-url "$TORCH_INDEX" xformers \
         || echo "[da3] xformers not installed (optional; DA3 falls back to plain attention)"
+    uv pip install --python "$d/.venv" addict                  # imported by depth_anything_3.model, not declared
     check='from depth_anything_3.api import DepthAnything3' ;;
   vggt)
     d=pod/third_party/vggt; clone "$VGGT_URL" "$VGGT_REF" "$d"
@@ -50,5 +51,18 @@ case "$m" in
   *) echo "unknown model '$m' (mapanything pi3x da3 vggt)"; exit 2 ;;
 esac
 uv pip install --python "$d/.venv" pillow numpy huggingface_hub
+# Model repos do not always declare every import (DA3 needs 'addict'): install what the import check reports
+# missing, a few rounds, then check again.
+for round in 1 2 3 4 5 6 7 8; do
+    if out=$("$d/.venv/bin/python" -c "$check" 2>&1); then break; fi
+    mod=$(printf '%s\n' "$out" | grep -oP "No module named '\K[^'.]+" | tail -1 || true)
+    if [ -z "$mod" ]; then printf '%s\n' "$out" | tail -20; echo "[$m] import check failed"; exit 1; fi
+    case "$mod" in
+        cv2) pkg=opencv-python-headless ;; PIL) pkg=pillow ;; sklearn) pkg=scikit-learn ;;
+        yaml) pkg=pyyaml ;; skimage) pkg=scikit-image ;; *) pkg="$mod" ;;
+    esac
+    echo "[$m] missing module '$mod' -> installing $pkg"
+    uv pip install --python "$d/.venv" "$pkg"
+done
 "$d/.venv/bin/python" -c "$check; import torch; print('[$m] import ok, torch', torch.__version__, 'cuda', torch.cuda.is_available())"
 touch "$d/.venv/.ravidata_ok"       # pod.sh setup skips this model next time

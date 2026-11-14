@@ -38,7 +38,8 @@ stage_setup () {
     command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || echo "no nvidia-smi"
     for m in $MODELS; do
         if [ -f "$(repo_of $m)/.venv/.ravidata_ok" ]; then echo "setup: $m already installed"; continue; fi
-        bash pod/envs.sh "$m" 2>&1 | tee "$WORK/logs/setup_$m.log"
+        bash pod/envs.sh "$m" 2>&1 | tee "$WORK/logs/setup_$m.log" \
+            || echo "setup: $m FAILED (see $WORK/logs/setup_$m.log); the other models go on"
     done
 }
 stage_data () {     # only what the maps need: the videos + the calibration (radar and IMU stay off the pod)
@@ -57,6 +58,9 @@ stage_check () {      # FRAMES_DIR: where the frames of the first take are (the 
     if [ "$WINDOW" -eq 0 ]; then tries=0; else tries="$WINDOW"; for w in 48 32 16; do [ "$w" -lt "$WINDOW" ] && tries="$tries $w"; done; fi
     for m in $MODELS; do
         ok=""
+        if [ ! -f "$(repo_of $m)/.venv/.ravidata_ok" ]; then
+            echo "check $m: SKIP (setup failed, see $WORK/logs/setup_$m.log)"; continue
+        fi
         for w in $tries; do
             log="$WORK/logs/check_${m}_w$w.log"; rm -rf "$WORK/check/$m"
             if "$(py_of $m)" "pod/runners/$m.py" --frames "$fdir" --out "$WORK/check/$m" --window 0 \

@@ -223,6 +223,28 @@ def _anonymise(p: np.ndarray, boxes, scale: float):
         p[y0:y1, x0:x1] = cv2.GaussianBlur(big, (k, k), 0).astype(p.dtype)
 
 
+def blur_still(path: Path, score: float = 0.5) -> int:
+    """Faces in a still image (the calibration figure is made from the original video) -> pixelated + blurred,
+    boxes enlarged as in the videos. Returns the number of faces."""
+    import cv2
+    img = cv2.imread(str(path))
+    if img is None:
+        return 0
+    det = cv2.FaceDetectorYN.create(str(yunet_path()), "", (img.shape[1], img.shape[0]), score, 0.3, 5000)
+    _, f = det.detect(img)
+    boxes = [] if f is None else [r[:4] for r in f]
+    grown = []
+    for x, y, w, h in boxes:
+        cx, cy = x + w / 2, y + h / 2
+        grown.append((cx - w * 0.9, cy - h * 1.0, w * 1.8, h * 2.0))
+    for c in range(3):
+        ch = np.ascontiguousarray(img[..., c])
+        _anonymise(ch, grown, 1.0)
+        img[..., c] = ch
+    cv2.imwrite(str(path), img)
+    return len(boxes)
+
+
 def blur_video(name: str, src: Path, max_frames: int | None = None, crf: int = 20, preset: str = "fast",
                audio: str = "copy") -> Path:
     import av
@@ -357,17 +379,23 @@ def _write_audio(o, sa, y: np.ndarray, rate: int, t0: float, layout: str):
 
 # ================================================================================================ export
 def _scrub_imu(src: Path, dst: Path):
-    """Copy the Sensor Logger zip without the device id."""
-    with zipfile.ZipFile(src) as zi, zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zo:
+    """The Sensor Logger zip -> a folder of its CSVs (one per sensor, as exported), without the device id and
+    without empty files. A folder, not a zip: readable directly (pandas, the HF file viewer), nothing to unpack."""
+    dst.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(src) as zi:
         for it in zi.infolist():
+            if it.is_dir() or not it.filename.lower().endswith(".csv"):
+                continue
             data = zi.read(it.filename)
+            if not data.strip():
+                continue
             if it.filename == "Metadata.csv":
                 lines = data.decode("utf-8").splitlines()
                 head = lines[0].split(",")
                 drop = [k for k, h in enumerate(head) if h.strip().lower() in ("device id",)]
                 lines = [",".join(x for k, x in enumerate(ln.split(",")) if k not in drop) for ln in lines]
                 data = ("\n".join(lines) + "\n").encode("utf-8")
-            zo.writestr(it.filename, data)
+            (dst / Path(it.filename).name).write_bytes(data)
 
 
 def _radar_files(name: str, folder: Path, work: Path) -> list[dict]:
@@ -461,6 +489,7 @@ def export(only: str | None = None):
     png = (RECS / CALIB["folder"] / CALIB["json"]).with_suffix(".png")
     if png.exists():
         shutil.copy2(png, cal / "camera.calib.png")
+        blur_still(cal / "camera.calib.png")     # made from the original (unblurred) video
     write_apriltags()
     index = []
     for name, (fold, kind, desc) in TAKES.items():
@@ -471,13 +500,13 @@ def export(only: str | None = None):
         print(f"export {name} …", flush=True)
         z = _zip_of(folder)
         if z is not None:
-            _scrub_imu(z, work / "imu.zip")
+            _scrub_imu(z, work / "imu")
         recs = _radar_files(name, folder, work)
         video = work / "video.mp4"
         # the sync comes from the ORIGINAL video (full sound; same frames and frame times as the published one)
-        sync = _sync(name, _video_of(folder), work / "imu.zip" if z else None, recs)
+        sync = _sync(name, _video_of(folder), work / "imu" if z else None, recs)
         info = {"name": name, "kind": kind, "description": desc, "source_folder": fold, "recordings": recs,
-                "video": "video.mp4" if video.exists() else None, "imu": "imu.zip" if z else None,
+                "video": "video.mp4" if video.exists() else None, "imu": "imu/" if z else None,
                 "sync": sync}
         tj = folder / "take.json"
         if tj.exists():
@@ -605,11 +634,12 @@ rig.json                mounting: radar rotation, antenna pairs, camera offset
 apriltags.json          tag36h11 IDs, printed sizes (mm) and where each used tag was ("used")
 calibration/
   camera.calib.json     intrinsics from the checkerboard clip ("display" block = the upright 1440 × 1440 video)
-  camera.calib.png      corners used + an undistorted frame
+  camera.calib.png      corners used + an undistorted frame (faces blurred)
   checkerboard.mp4      the calibration clip (faces blurred)
 takes/<take>/
   video.mp4             phone video: upright, faces blurred, original frame times and sound; HEVC 10-bit, Log
-  imu.zip               Sensor Logger export (CSV per sensor; device id removed)
+  imu/                  Sensor Logger export: one CSV per sensor (gyroscope, accelerometer, gravity, orientation, ...;
+                        device id removed from Metadata.csv)
   take.json             what was recorded, every radar recording, the clock alignment ("sync")
   radar/NN_<part>_<config>.h5
       cube          (frames, Doppler bins or intervals, 3 RX, range bins) complex64
@@ -702,14 +732,21 @@ RIG_NOTES = ("Radar MRS6130-P1812 (Possumic RS6130, 60 GHz FMCW, 1 TX / 3 RX) on
 
 def upload(repo: str, private: bool):
     from huggingface_hub import HfApi
+    cal_png = OUT / "calibration" / "camera.calib.png"
+    if cal_png.exists():                          # made from the original video: blur faces before publishing
+        print(f"faces blurred in {cal_png.name}: {blur_still(cal_png)}")
     write_apriltags()
     write_card()                      # the card as in this script (the code link may be newer than the export)
     neutralise()
     api = HfApi()
     api.create_repo(repo, repo_type="dataset", private=private, exist_ok=True)
-    api.upload_large_folder(folder_path=str(OUT), repo_id=repo, repo_type="dataset",
-                            ignore_patterns=["**/faces.json", "**/faces_qa.jpg", "**/blurred_qa.jpg", "**/*.part.mp4", "**/*.scan.npz",
-                                             "**/_check*"])
+    ignore = ["**/faces.json", "**/faces_qa.jpg", "**/blurred_qa.jpg", "**/*.part.mp4", "**/*.scan.npz",
+              "**/_check*", "**/imu.zip"]                 # imu.zip: older exports (now imu/)
+    if hasattr(api, "upload_large_folder"):        # huggingface_hub < 2
+        api.upload_large_folder(folder_path=str(OUT), repo_id=repo, repo_type="dataset", ignore_patterns=ignore)
+    else:                                           # >= 2: upload_folder batches large folders and resumes
+        api.upload_folder(folder_path=str(OUT), repo_id=repo, repo_type="dataset", ignore_patterns=ignore,
+                          commit_message="RAVIDATA v1: 2026-11-13 recordings")
     print(f"https://huggingface.co/datasets/{repo}")
 
 
