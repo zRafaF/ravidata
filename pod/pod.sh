@@ -63,7 +63,7 @@ stage_check () {      # FRAMES_DIR: where the frames of the first take are (the 
         fi
         for w in $tries; do
             log="$WORK/logs/check_${m}_w$w.log"; rm -rf "$WORK/check/$m"
-            if "$(py_of $m)" "pod/runners/$m.py" --frames "$fdir" --out "$WORK/check/$m" --window 0 \
+            if "$(py_of $m)" "pod/runners/run_$m.py" --frames "$fdir" --out "$WORK/check/$m" --window 0 \
                   --max-frames "$w" --repo "$(repo_of $m)" > "$log" 2>&1; then
                 ok="$w"; break
             elif grep -qiE "out of memory|OutOfMemoryError" "$log"; then
@@ -86,7 +86,7 @@ stage_run () {
             out="$WORK/out/$m/$t"
             [ -f "$out/run.json" ] && { echo "run: $m/$t already done"; continue; }
             echo "run: $m on $t (window $w, overlap $ov)"
-            "$(py_of $m)" "pod/runners/$m.py" --frames "$WORK/frames/$t" --out "$out" --window "$w" \
+            "$(py_of $m)" "pod/runners/run_$m.py" --frames "$WORK/frames/$t" --out "$out" --window "$w" \
                 --overlap "$ov" --repo "$(repo_of $m)" < /dev/null 2>&1 | tee "$WORK/logs/run_${m}_$t.log" \
                 || echo "run: $m on $t FAILED (log kept, continuing)"
         done

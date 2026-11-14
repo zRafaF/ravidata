@@ -36,9 +36,10 @@ case "$m" in
     [ -d "$d/.venv" ] || uv venv --quiet --python 3.12 "$d/.venv"
     torch_cu128 "$d/.venv"
     uv pip install --python "$d/.venv" -e "$d"
+    # no xformers: the cu128 index only has builds for newer torch, which drags torch away from torchvision
+    # ("operator torchvision::nms does not exist"); DA3 runs without it
+    uv pip uninstall --python "$d/.venv" xformers 2>/dev/null || true
     torch_cu128 "$d/.venv"          # in case the package pulled another torch
-    uv pip install --python "$d/.venv" --index-url "$TORCH_INDEX" xformers \
-        || echo "[da3] xformers not installed (optional; DA3 falls back to plain attention)"
     uv pip install --python "$d/.venv" addict                  # imported by depth_anything_3.model, not declared
     check='from depth_anything_3.api import DepthAnything3' ;;
   vggt)
@@ -54,7 +55,7 @@ uv pip install --python "$d/.venv" pillow numpy huggingface_hub
 # Model repos do not always declare every import (DA3 needs 'addict'): install what the import check reports
 # missing, a few rounds, then check again.
 for round in 1 2 3 4 5 6 7 8; do
-    if out=$("$d/.venv/bin/python" -c "$check" 2>&1); then break; fi
+    if out=$("$d/.venv/bin/python" -c "$check; import torchvision" 2>&1); then break; fi
     mod=$(printf '%s\n' "$out" | grep -oP "No module named '\K[^'.]+" | tail -1 || true)
     if [ -z "$mod" ]; then printf '%s\n' "$out" | tail -20; echo "[$m] import check failed"; exit 1; fi
     case "$mod" in
@@ -64,5 +65,5 @@ for round in 1 2 3 4 5 6 7 8; do
     echo "[$m] missing module '$mod' -> installing $pkg"
     uv pip install --python "$d/.venv" "$pkg"
 done
-"$d/.venv/bin/python" -c "$check; import torch; print('[$m] import ok, torch', torch.__version__, 'cuda', torch.cuda.is_available())"
+"$d/.venv/bin/python" -c "$check; import torch, torchvision; print('[$m] import ok, torch', torch.__version__, 'torchvision', torchvision.__version__, 'cuda', torch.cuda.is_available())"
 touch "$d/.venv/.ravidata_ok"       # pod.sh setup skips this model next time
