@@ -17,7 +17,7 @@ Every long loop shows a progress bar with the time left; each step starts with `
 Results live in `results/analysis-v1/` and are kept in git (tables, figures, videos, Optuna studies, the run
 log, `REPORT.md` and `FINDINGS.md`), so a paper number can always be traced to its table and run. The recordings
 are on Hugging Face. To redo only what changed: `make analysis FROM=<step>` (tags -> extrinsic -> truth -> sensor
--> eval -> ablation -> opt -> eval-tuned -> plots -> story -> report); the ablation caches every recording's
+-> eval -> ablation -> opt -> eval-tuned -> floor -> plots -> story -> report); the ablation caches every recording's
 result (keyed by settings, truth table and code) and the Optuna studies resume.
 
 Quick results go to a separate folder (`results/analysis-quick`, not in git) and are never mixed with full ones. Delete that
@@ -35,6 +35,7 @@ folder whenever you like.
 | `an-ablation` | one change at a time from CA-CFAR defaults (background, RX combining, Doppler, near cut, integration over frames, detector, M-of-N, tracker, DBSCAN, grids, IMU height gate), each over a threshold sweep; cached per recording | `ablation_points`, `ablation_summary` | ~30-60 min first time, seconds after |
 | `an-opt` | multi-objective tuning of every family + generalisation folds | `opt_trials_*`, `opt_results_*`, `opt_best_params_*.json` | pooled ~1.5-3 h; strict see below |
 | `an-eval-tuned` | every family again with the tuned settings | `eval_*_tuned_<protocol>` | ~15 min |
+| `an-floor` | where the early alarms of the carried takes come from: outcome by floor margin (floor-in-beam range minus obstacle range) and by pitch, and what the camera map has at the range of alarms with nothing within 2 m (still-radar empty scenes as control); no detector is rerun | `floor_margin`, `floor_pitch`, `phantom`, `phantom_frames` | seconds |
 | `an-cordic` | (not in `make analysis`; to be redone on the C code) fixed-point CORDIC vs float64: function error, phase of real returns, occupancy grid | `cordic_error`, `cordic_phase`, `cordic_grid`, `cordic_reference.json` | ~30 min |
 | `plots` | figures: paper candidates (`--all-figs` adds the diagnostics) | `figures/*.png` (`--pdf` for PDF) | seconds |
 | `story` | explanatory figures: how the truth is built at one radar frame, radar range-time maps with the truth and every detector's nearest detection | `figures/story/*.png` | ~1 min |
@@ -73,7 +74,8 @@ radar's range-azimuth plane: X = r sin(az), Z = r cos(az) with r the slant range
   default Pi3X), made metric by the AprilTags (tag distance from solvePnP over map depth at the tag centre, per
   window: table `map_scale`), moved to the exact radar frame time with the fused trajectory (`make fuse`), else the
   nearest keyframe within 0.25 s. "Up" comes from the phone gravity sensor; the floor is the densest level below the
-  camera; obstacles are 0.12-2.0 m above the floor. Tags on people, chairs and brooms seen within 0.1 s are added
+  camera; obstacles are anything more than 0.12 m above the floor (nothing is removed overhead: a ceiling or roof
+  in the beam counts, as it does for the radar). Tags on people, chairs and brooms seen within 0.1 s are added
   as obstacle points.
 - **Static takes**: the tagged objects (median pose over the recording; floor tags are floor), plus the static-depth
   surfaces when they exist. With tags only the truth is *incomplete*: recall is scored, but detections that are
@@ -85,7 +87,7 @@ Defaults are textbook starting values, never tuned on this data. All families sh
 (background: none / causal EMA / empty-scene reference [static takes]; Doppler: sum / zero / non-zero / max;
 RX combining: mean / coherent / max / one RX), the range gate, an optional causal M-of-N persistence and the
 optional **IMU height gate** (radar + IMU fusion): the phone's gravity levels every detection's elevation, and
-returns that land on the floor or overhead are dropped (`radar_h` assumed radar height, `h_min`, `el_off` a residual
+returns that land on the floor are dropped (`radar_h` assumed radar height, `h_min`, `el_off` a residual
 elevation bias; all tunable). `make an-eval` runs every family twice: as is and with the height gate.
 
 | family | detector |

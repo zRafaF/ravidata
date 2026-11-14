@@ -32,7 +32,9 @@ def variants():
     """(axis, label, family, params) - the base is ('base', 'CA-CFAR defaults', 'ca_cfar', {})."""
     v = [("base", "CA-CFAR (defaults)", "ca_cfar", {})]
     v += [("background", f"bg {lab}", "ca_cfar", p) for lab, p in
-          (("EMA a=0.9", {"bg": "ema", "bg_alpha": 0.9}), ("EMA a=0.98", {"bg": "ema", "bg_alpha": 0.98}))]
+          (("EMA a=0.9", {"bg": "ema", "bg_alpha": 0.9}), ("EMA a=0.98", {"bg": "ema", "bg_alpha": 0.98}),
+           ("empty-scene reference (static)", {"bg": "empty"}))]
+    v += [("static best guess", "OS-CFAR + empty-scene reference", "os_cfar", {"bg": "empty"})]
     v += [("combine RX", f"combine {c}", "ca_cfar", {"combine": c}) for c in ("coh", "max", "rx1")]
     v += [("Doppler (2D)", f"doppler {d}", "ca_cfar", {"doppler": d}) for d in ("zero", "nonzero", "max")]
     v += [("near cut", f"r_min {r:.1f} m", "ca_cfar", {"r_min": r}) for r in (0.5, 0.7, 0.9)]
@@ -148,12 +150,14 @@ def run(takes=None, workers=4):
                          arc_pd=m_car.get("arc_pd"), arc_early_rate=m_car.get("arc_early_rate"),
                          near_pd=m_all["near_pd"], near_early_rate=m_all["near_early_rate"], f1_50=m_all["f1_50"],
                          recall_50=m_all["recall_50"], fp_per_frame_50=m_all["fp_per_frame_50"],
+                         obj_pd=m_all.get("obj_pd"), obj_other_per_frame=m_all.get("obj_other_per_frame"),
                          r_f1_50=m_all["r_f1_50"], gospa=m_all["gospa"]))
     Pt = pd.DataFrame(rows)
     C.save_table(Pt, "ablation_points")
     S = summarise(Pt)
     C.save_table(S, "ablation_summary")
-    C.log("\n" + S[["axis", "variant", "pd_at_5", "pd_at_10", "pd_at_20", "auc_30"]].round(3).to_string(index=False))
+    C.log("\n" + S[[c for c in ["axis", "variant", "pd_at_10", "pd_at_20", "auc_30", "obj_pd_at_1", "obj_pd_at_2"]
+                     if c in S]].round(3).to_string(index=False))
     return S
 
 
@@ -178,14 +182,20 @@ def summarise(Pt):
     import pandas as pd
     rows = []
     for (axis, label), g in Pt.groupby(["axis", "variant"], sort=False):
-        g = g.dropna(subset=["arc_pd", "arc_early_rate"])
-        if not len(g):
-            continue
-        x, y = operating_curve(g.arc_early_rate.to_numpy(), g.arc_pd.to_numpy())
-        best = lambda b: float(y[x <= b].max()) if (x <= b).any() else 0.0
-        grid = np.linspace(0, 0.3, 61)
-        yy = np.array([best(b) for b in grid])
-        rows.append(dict(axis=axis, variant=label, family=g.family.iloc[0], pd_at_5=best(0.05), pd_at_10=best(0.10),
-                         pd_at_20=best(0.20), auc_30=float(np.trapezoid(yy, grid) / 0.3),
-                         near_pd_max=float(g.near_pd.max()), f1_50_max=float(g.f1_50.max())))
+        row = dict(axis=axis, variant=label, family=g.family.iloc[0])
+        ga = g.dropna(subset=["arc_pd", "arc_early_rate"])
+        if len(ga):
+            x, y = operating_curve(ga.arc_early_rate.to_numpy(), ga.arc_pd.to_numpy())
+            best = lambda b: float(y[x <= b].max()) if (x <= b).any() else 0.0
+            grid = np.linspace(0, 0.3, 61)
+            yy = np.array([best(b) for b in grid])
+            row.update(pd_at_5=best(0.05), pd_at_10=best(0.10), pd_at_20=best(0.20),
+                       auc_30=float(np.trapezoid(yy, grid) / 0.3))
+        go = g.dropna(subset=["obj_pd", "obj_other_per_frame"])     # static takes: placed objects
+        if len(go):
+            xo, yo = operating_curve(go.obj_other_per_frame.to_numpy(), go.obj_pd.to_numpy())
+            bo = lambda b: float(yo[xo <= b].max()) if (xo <= b).any() else 0.0
+            row.update(obj_pd_at_1=bo(1.0), obj_pd_at_2=bo(2.0), obj_pd_max=float(go.obj_pd.max()))
+        row.update(near_pd_max=float(g.near_pd.max()), f1_50_max=float(g.f1_50.max()))
+        rows.append(row)
     return pd.DataFrame(rows)

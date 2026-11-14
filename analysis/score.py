@@ -62,7 +62,8 @@ def _assign(Dm):
 ARC_ALERT_M = 2.0            # arc view: an alert is 'an obstacle nearer than 2 m anywhere in the beam'
 
 
-def score_rec(d, obs_r, obs_az, floor_r, complete, cor_truth, covered, arc_truth=None, arc_covered=None):
+def score_rec(d, obs_r, obs_az, floor_r, complete, cor_truth, covered, arc_truth=None, arc_covered=None,
+              objects=None):
     """d: detections of one recording; obs_r/obs_az/floor_r: (n, N_SECT) truth; covered: (n,) bool.
     Returns (frame table dict, detection table dict)."""
     n = obs_r.shape[0]
@@ -161,7 +162,18 @@ def score_rec(d, obs_r, obs_az, floor_r, complete, cor_truth, covered, arc_truth
     cor_det = corridor_nearest(d, n)
     if arc_truth is None:
         arc_truth, arc_covered = np.full(n, np.nan), np.zeros(n, bool)
-    fr.update(arc_truth=arc_truth, arc_covered=arc_covered, complete=complete.astype(bool), n_det_fov_raw=n_in, n_det_out=n_out, cor_truth=cor_truth, cor_det=cor_det, covered=covered)
+    # object level (static takes): each still placed object (chair / broom) found when any detection, at any angle,
+    # is within 0.25 m of its range; detections near no object are 'other returns' (walls, furniture, clutter)
+    obj_n, obj_hit, obj_other = np.zeros(n), np.zeros(n), np.zeros(n)
+    if objects is not None and len(objects):
+        near_obj = np.abs(d["r"][:, None] - np.asarray(objects)[None]) <= 0.25        # (dets, objects)
+        hitmat = np.zeros((n, len(objects)), bool)
+        fi, oi = np.nonzero(near_obj)
+        hitmat[d["f"][fi], oi] = True
+        obj_n[:] = len(objects)
+        obj_hit = hitmat.sum(1).astype(float)
+        np.add.at(obj_other, d["f"][~near_obj.any(1)], 1)
+    fr.update(obj_n=obj_n, obj_hit=obj_hit, obj_other=obj_other, arc_truth=arc_truth, arc_covered=arc_covered, complete=complete.astype(bool), n_det_fov_raw=n_in, n_det_out=n_out, cor_truth=cor_truth, cor_det=cor_det, covered=covered)
     dt = dict(f=f, sector=s, r=r, az=red["az_used"], score=red["score"], dist=det_dist, cause=cause,
               **{f"m{int(c * 100)}": det_match[:, j] for j, c in enumerate(RINGS)})
     return fr, dt
@@ -213,6 +225,11 @@ def summary(frames, dets=None, fps=None) -> dict:
         ta, da = ok & (at < ARC_ALERT_M), np.isfinite(nd2) & (nd2 < ARC_ALERT_M)
         out["arc_alert_recall"] = float((ta & da).sum() / max(1, ta.sum()))
         out["arc_alert_false_rate"] = float((da & ~ta).sum() / max(1, (~ta).sum()))
+    if "obj_n" in F and F.obj_n.sum():
+        Fo = F[F.obj_n > 0]
+        out["obj_frames"] = int(len(Fo))
+        out["obj_pd"] = float(Fo.obj_hit.sum() / Fo.obj_n.sum())
+        out["obj_other_per_frame"] = float(Fo.obj_other.mean())
     ntr, ndr = F.n_truth_r.sum(), F.n_det_r.sum()
     for c in RINGS:
         tp = F[f"rtp{int(c * 100)}"].sum()

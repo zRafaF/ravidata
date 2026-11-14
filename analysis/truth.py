@@ -6,7 +6,7 @@ walking corridor (|X| < 0.5 m, 0.3 < Z < 3 m, inside the FOV).
 
 * carried takes: keyframe depth of the feed-forward map (default Pi3X), metric through the AprilTags, moved to the
   radar frame time with the fused trajectory when there is one (else the nearest keyframe within max_dt);
-  'up' from the phone gravity; floor = densest level below the camera; obstacle = 0.12 .. 2.0 m above the floor.
+  'up' from the phone gravity; floor = densest level below the camera; obstacle = more than 0.12 m above the floor.
   Tags on people / chairs / brooms seen at that moment are added as obstacle points.
 * static takes: the AprilTags on the objects (median over the recording; floor tags are floor), plus the
   static-depth surfaces (derived/static-depth-v1) when that step has been run -> 'truth_complete'.
@@ -21,7 +21,9 @@ from . import common as C
 from . import geometry as G
 from . import imu
 
-H_OBS_MIN, H_OBS_MAX, H_FLOOR_TOL = 0.12, 2.0, 0.06
+H_OBS_MIN, H_OBS_MAX, H_FLOOR_TOL = 0.12, np.inf, 0.06
+# obstacle = anything more than 0.12 m above the floor; nothing is removed overhead (telling overhead structures
+# apart is out of scope: a ceiling or a roof in the beam counts as an obstacle, as it does for the radar)
 ARC_HALF_DEG = 60.0          # 'arc' truth: nearest obstacle anywhere in the radar's beam (+-60 deg), any direction
 ARC_WINDOW_S = 4.0           # keyframes of the same map window within +-4 s build the arc truth's local map
 ARC_EL_HALF_DEG = 30.0       # ... within +-30 deg of elevation (the antenna's vertical beam; tables passed at hip
@@ -171,6 +173,9 @@ def static_depth_points(take, part):
     return np.stack([(uu[ok] - K[0, 2]) / K[0, 0] * z[ok], (vv[ok] - K[1, 2]) / K[1, 1] * z[ok], z[ok]], 1)
 
 
+OBJECTS: list = []          # still placed objects of the static takes (object-level scoring)
+
+
 def run_static(take, tags, rows_s, rows_f, trc):
     for rec in C.recordings(take):
         t = C.radar_times(rec, C.default_max_frames())
@@ -190,6 +195,11 @@ def run_static(take, tags, rows_s, rows_f, trc):
                     mov_ids.append(i_)                        # people / moved objects: per frame, below
                     continue
                 pts.append(np.median(g[["tx", "ty", "tz"]].to_numpy(), 0))
+                if C.TAG_KIND.get(int(i_)) in ("chair", "broom") and len(g) >= 5 \
+                        and g[["tx", "ty", "tz"]].std().max() <= 0.03:      # a still placed object
+                    r_, a_, e_ = G.polar(G.to_radar(pts[-1], trc))
+                    OBJECTS.append(dict(take=take, rec=rec.key, part=rec.part, id=int(i_),
+                                        kind=C.TAG_KIND[int(i_)], r=float(r_), az=float(a_), el=float(e_)))
             moving = ob[ob.id.isin(mov_ids)] if mov_ids else None
             if len(fl):
                 hf = float(np.median(fl[["tx", "ty", "tz"]].to_numpy() @ up))
@@ -383,6 +393,7 @@ def run(takes=None, model="pi3x", max_dt=0.25):
     tags = C.load_table("tags", required=False)
     trc = t_rc()
     rows_s, rows_f, rows_scale = [], [], []
+    OBJECTS.clear()
     for take in C.available_takes(takes):
         C.log(f"truth {take}")
         if take in C.STATIC:
@@ -399,6 +410,8 @@ def run(takes=None, model="pi3x", max_dt=0.25):
     C.save_table(S, "truth_sectors", takes=done)
     C.save_table(Fm, "truth_frames", takes=done)
     C.save_table(pd.DataFrame(rows_scale), "map_scale", takes=done)
+    C.save_table(pd.DataFrame(OBJECTS, columns=["take", "rec", "part", "id", "kind", "r", "az", "el"]),
+                 "truth_objects", takes=done)
     if len(Fm):
         g = Fm.groupby("take").agg(frames=("f", "size"), covered=("covered", "mean"), n_obj=("n_obj", "mean"),
                                    corridor=("corridor_r", lambda x: np.isfinite(x).mean()))

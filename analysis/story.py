@@ -105,31 +105,44 @@ def fig_truth_carried(key="indoor_course/01_D1", t_rel=30.0, pdf=False):
     m = d["f"] == f
     dX, dZ = G.plane(d["r"][m], np.nan_to_num(d["az"][m]))
 
-    fig = plt.figure(figsize=(15, 5.2))
-    gs = fig.add_gridspec(1, 3, width_ratios=[1, 1.15, 1.25], wspace=0.25)
-    a0, a1, a2 = (fig.add_subplot(gs[0, q]) for q in range(3))
-    a0.imshow(und)
-    oth = ~(obs | flo)
+    import matplotlib.colors as mcolors
+    from matplotlib.cm import ScalarMappable
     from matplotlib.lines import Line2D
-    for msk, col, s in ((oth, OTHER_C, 2), (flo, FLOOR_C, 3), (obs, OBS_C, 3)):
-        a0.scatter(uv[msk, 0], uv[msk, 1], s=s, c=col, alpha=0.45, lw=0)
-    handles = [Line2D([], [], ls="", marker="o", ms=5, color=c, label=l) for c, l in
-               ((OBS_C, "obstacle: 0.12-2.0 m above the floor"), (FLOOR_C, "floor"), (OTHER_C, "other (above 2 m)"))]
-    handles.append(Line2D([], [], ls="", marker="o", ms=7, mfc="none", mec="white", mew=1.6,
-                          label="nearest obstacle per 4° sector"))
+    base = plt.get_cmap("Oranges")
+    HCMAP = mcolors.LinearSegmentedColormap.from_list("h", base(np.linspace(0.35, 1.0, 256)))
+    HNORM = mcolors.Normalize(TR.H_OBS_MIN, 2.5)
+    FLOOR_FILL = "#2a78d6"
+    hk = h - hf                                   # keyframe points: height above the floor (m)
+
+    def layer(ax, x, y, hgt, s_obs=3, s_floor=3):
+        fl = np.abs(hgt) < TR.H_FLOOR_TOL
+        ob = hgt > TR.H_OBS_MIN
+        mid = ~(fl | ob)
+        ax.scatter(x[mid], y[mid], s=s_obs * 0.5, c="#b9b8b3", alpha=0.35, lw=0)
+        ax.scatter(x[fl], y[fl], s=s_floor, c=FLOOR_FILL, alpha=0.30, lw=0)
+        o = np.argsort(hgt[ob])                   # low first, so the higher points stay visible
+        ax.scatter(x[ob][o], y[ob][o], s=s_obs, c=hgt[ob][o], cmap=HCMAP, norm=HNORM, alpha=0.75, lw=0)
+
+    fig = plt.figure(figsize=(16, 5.6))
+    gs = fig.add_gridspec(1, 4, width_ratios=[1, 1.15, 1.25, 0.04], wspace=0.28)
+    a0, a1, a2, cax = (fig.add_subplot(gs[0, q]) for q in range(4))
+    a0.imshow(und)
+    layer(a0, uv[:, 0], uv[:, 1], hk, 4, 4)
     sm = np.isfinite(o_r)
     if sm.any():
         a = np.radians(o_az[sm]); e = np.radians(o_el[sm])
         Pp = np.stack([o_r[sm] * np.cos(e) * np.sin(a), -o_r[sm] * np.sin(e), o_r[sm] * np.cos(e) * np.cos(a)], 1) + trc
         u2 = Pp[:, :2] / Pp[:, 2:3] * [tm.K[0, 0], tm.K[1, 1]] + [tm.K[0, 2], tm.K[1, 2]]
-        a0.plot(u2[:, 0], u2[:, 1], "o", mfc="none", mec="white", ms=9, mew=1.6)
+        a0.plot(u2[:, 0], u2[:, 1], "o", mfc="none", mec="white", ms=9, mew=1.8)
     a0.set_xlim(0, tm.res); a0.set_ylim(tm.res, 0); a0.axis("off")
-    a0.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.01), ncol=2, fontsize=7, frameon=False)
-    a0.set_title("a) camera view: map depth, labelled with the IMU 'up'", fontsize=9)
+    handles = [Line2D([], [], ls="", marker="s", ms=7, color=FLOOR_FILL, alpha=0.5, label="floor (IMU 'up' + plane fit)"),
+               Line2D([], [], ls="", marker="s", ms=7, color=HCMAP(0.6), label="obstacle: > 0.12 m above the floor"),
+               Line2D([], [], ls="", marker="o", ms=8, mfc="none", mec=INK, mew=1.4,
+                      label="truth: nearest obstacle per 4° sector")]
+    a0.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.01), ncol=1, fontsize=7.5, frameon=False)
+    a0.set_title("a) camera view: map depth coloured by height", fontsize=9)
 
-    a1.scatter(Xp[~(o_m | f_m)], Zp[~(o_m | f_m)], s=1, c=OTHER_C, alpha=0.3, lw=0)
-    a1.scatter(Xp[f_m], Zp[f_m], s=1.5, c=FLOOR_C, alpha=0.35, lw=0)
-    a1.scatter(Xp[o_m], Zp[o_m], s=2, c=OBS_C, alpha=0.6, lw=0)
+    layer(a1, Xp, Zp, hq, 2, 1.5)
     for half, ls, lab in ((G.HFOV_HALF_DEG, "--", "camera view ±28°"), (TR.ARC_HALF_DEG, ":", "radar beam ±60°")):
         for sg in (-1, 1):
             a1.plot([0, 5 * np.sin(np.radians(sg * half))], [0, 5 * np.cos(np.radians(sg * half))], ls, color=INK2,
@@ -139,40 +152,35 @@ def fig_truth_carried(key="indoor_course/01_D1", t_rel=30.0, pdf=False):
         a1.plot(sx, sz, "o", mfc="none", mec=INK, ms=7, mew=1.3, label="truth: nearest per sector")
     if np.isfinite(arc):
         tt = np.radians(np.linspace(-60, 60, 121))
-        a1.plot(arc * np.sin(tt), arc * np.cos(tt), color=INK, lw=1.6, label=f"arc truth: {arc:.2f} m")
-    a1.plot(dX, dZ, "D", color=SERIES[6], ms=6, mec=INK, mew=0.5, label="radar detections (CA-CFAR, tuned)")
+        a1.plot(arc * np.sin(tt), arc * np.cos(tt), color=INK, lw=1.8, label=f"arc truth (nearest in the beam): {arc:.2f} m")
+    a1.plot(dX, dZ, "D", color=SERIES[6], ms=6, mec=INK, mew=0.5, label="radar detections (CA-CFAR)")
     a1.plot([0], [0], "^", color=INK, ms=9)
     a1.set_xlim(-3, 3); a1.set_ylim(0, 4.5); a1.set_aspect("equal")
     a1.set_xlabel("X (m)"); a1.set_ylabel("Z (m), radar range-azimuth plane")
-    a1.legend(loc="upper left", fontsize=6.5, framealpha=0.85)
+    a1.legend(loc="upper left", fontsize=6.5, framealpha=0.9, facecolor="white")
     a1.set_title("b) local map (±4 s of keyframes), bird's-eye", fontsize=9)
 
     hor = np.hypot(Q[:, 0], Q[:, 2]) * np.sign(Q[:, 2])
     bm = (np.abs(az) <= TR.ARC_HALF_DEG)
-    H = -np.median(hq[f_m] - (Q[f_m] @ (-np.array([0, 1.0, 0])))) if f_m.any() else 1.2
-    a2.axhspan(TR.H_OBS_MIN, TR.H_OBS_MAX, color=OBS_C, alpha=0.07, lw=0)
-    a2.axhline(0, color=FLOOR_C, lw=1)
-    a2.scatter(hor[bm & ~o_m & ~f_m], hq[bm & ~o_m & ~f_m], s=1, c=OTHER_C, alpha=0.3, lw=0)
-    a2.scatter(hor[bm & f_m], hq[bm & f_m], s=1.5, c=FLOOR_C, alpha=0.35, lw=0)
-    a2.scatter(hor[bm & o_m], hq[bm & o_m], s=2, c=OBS_C, alpha=0.6, lw=0)
-    # radar position and beam (+-30 deg about the boresight, levelled with the IMU pitch)
-    Hr = float(np.median(hq[f_m] - 0)) if False else None
-    cam_h = float(-TR.classify(X, up)[1])
+    a2.axhline(0, color=FLOOR_FILL, lw=1)
+    layer(a2, hor[bm], hq[bm], hq[bm], 2, 1.5)
+    cam_h = float(-hf)
     pitch = np.degrees(np.arcsin(np.clip(up[2], -1, 1)))       # boresight elevation above the horizon (- = down)
     a2.plot([0], [cam_h], "^", color=INK, ms=9)
     for e_ in (pitch - TR.ARC_EL_HALF_DEG, pitch, pitch + TR.ARC_EL_HALF_DEG):
-        a2.plot([0, 5 * np.cos(np.radians(e_))], [cam_h, cam_h + 5 * np.sin(np.radians(e_))], ":" if e_ != pitch else "-",
-                color=INK2, lw=0.9)
+        a2.plot([0, 6 * np.cos(np.radians(e_))], [cam_h, cam_h + 6 * np.sin(np.radians(e_))],
+                ":" if e_ != pitch else "-", color=INK2, lw=0.9)
     if np.isfinite(arc):
         a2.axvline(arc, color=INK, lw=1.2, ls="--")
-        a2.text(arc, 2.3, f" arc truth {arc:.2f} m", fontsize=7)
+        a2.text(arc, 2.75, f" arc truth {arc:.2f} m", fontsize=7)
     if np.isfinite(arc_floor):
-        a2.axvline(arc_floor, color=FLOOR_C, lw=1.0, ls="--")
-        a2.text(arc_floor, 2.1, f" floor enters the beam {arc_floor:.2f} m", fontsize=7, color=FLOOR_C)
-    a2.set_xlim(0, 4.5); a2.set_ylim(-0.3, 2.6)
+        a2.axvline(arc_floor, color=FLOOR_FILL, lw=1.0, ls="--")
+        a2.text(arc_floor, 2.55, f" floor enters the beam {arc_floor:.2f} m", fontsize=7, color=FLOOR_FILL)
+    a2.set_xlim(0, 4.5); a2.set_ylim(-0.3, 3.0)
     a2.set_xlabel("horizontal distance (m)"); a2.set_ylabel("height above the floor (m)")
-    a2.set_title(f"c) side view inside the beam: obstacle band 0.12-2.0 m, radar {cam_h:.2f} m high, "
+    a2.set_title(f"c) side view inside the beam (±30° about the boresight); radar {cam_h:.2f} m high, "
                  f"pitch {pitch:+.0f}°", fontsize=9)
+    fig.colorbar(ScalarMappable(norm=HNORM, cmap=HCMAP), cax=cax, label="height above the floor (m)")
     fig.suptitle(f"Ground truth at one radar frame: {rec.key}, t = {t_rel:.1f} s", fontsize=10)
     _out(f"truth_{take}_{t_rel:05.1f}s", plt, fig, pdf)
 

@@ -11,6 +11,7 @@ Steps, in the order `all` runs them (each writes tables under results/analysis-v
   ablation         one stage at a time, each over a threshold sweep     -> ablation_points, ablation_summary
   opt         F3-F4 multi-objective tuning + generalisation folds       -> opt_trials_*, opt_results_*, opt_best_params_*.json
   eval-tuned       every family with the tuned settings                 -> eval_*_tuned
+  floor            where the early alarms come from (floor in beam, phantom) -> floor_margin, floor_pitch, phantom
   cordic      E1   fixed-point CORDIC vs float64 (not part of `all`)    -> cordic_error, cordic_phase, cordic_grid
   plots            figures from the tables only                         -> figures/*.png
   story            explanatory figures (truth, range-time maps)         -> figures/story/*.png
@@ -24,8 +25,8 @@ import time
 
 from . import common as C
 
-STEPS = ["tags", "extrinsic", "truth", "sensor", "eval", "ablation", "opt", "eval-tuned", "cordic", "plots", "story",
-         "report"]
+STEPS = ["tags", "extrinsic", "truth", "sensor", "eval", "ablation", "opt", "eval-tuned", "floor", "cordic", "plots",
+         "story", "report"]
 ALL = [s for s in STEPS if s != "cordic"]            # CORDIC is done later (on the C code); `cordic` still runs alone
 
 
@@ -79,7 +80,7 @@ def main(argv=None):
             from . import pipeline as PL
             evaluate.run(a.takes, a.families)
             fams = [f for f in (a.families or PL.FAMILIES) if not f.startswith("app_")]
-            C.log("  the same with the IMU height gate (floor / overhead returns dropped):")
+            C.log("  the same with the IMU height gate (floor returns dropped):")
             evaluate.run(a.takes, fams, variant="hgate", params_by_family={f: {"hgate": True} for f in fams})
         elif st == "ablation":
             from . import ablation
@@ -109,6 +110,9 @@ def main(argv=None):
                         continue
                     evaluate.run(a.takes, [f for f in (a.families or list(best)) if f in best],
                                  variant=f"tuned_{pr}_{ob}", params_by_family=best)
+        elif st == "floor":
+            from . import floor
+            floor.run(n_max=40 if a.quick else 200)
         elif st == "cordic":
             from . import cordic
             cordic.run(a.takes, max_recs=4 if a.quick else None)

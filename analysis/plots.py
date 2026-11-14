@@ -546,32 +546,131 @@ def fig_outcome_vs_distance(plt, pdf):
 
 
 def fig_ablation(plt, pdf):
-    """Forest plot: each pre- / post-processing variant against the base pipeline, at a 10 % and a 20 % early-alarm
-    budget (best 'found' on the variant's threshold sweep)."""
+    """Forest plot, two views side by side: carried takes (arc view: found at a 10 % / 20 % early-alarm budget) and
+    static takes (placed objects found with at most 1 / 2 other returns per frame). Each row changes one stage of
+    the base pipeline (CA-CFAR defaults, dashed lines); every value is the best over that row's threshold sweep."""
     S = C.load_table("ablation_summary", required=False)
     if S is None or not len(S):
         return
     base = S[S.axis == "base"].iloc[0]
     S = S[S.axis != "base"].reset_index(drop=True)
-    fig, ax = plt.subplots(figsize=(8, 0.26 * len(S) + 1.5))
     y = np.arange(len(S))[::-1]
-    ax.axvline(base.pd_at_10, color=SERIES[0], lw=1, ls="--")
-    ax.axvline(base.pd_at_20, color=SERIES[1], lw=1, ls="--")
-    for yy, (_, r) in zip(y, S.iterrows()):
-        ax.plot([r.pd_at_10, r.pd_at_20], [yy, yy], color="#d6d5d0", lw=1.5, zorder=0)
-    ax.plot(S.pd_at_10, y, "o", color=SERIES[0], ms=6, label="at 10 % early alarms")
-    ax.plot(S.pd_at_20, y, "s", color=SERIES[1], ms=6, label="at 20 % early alarms")
-    ax.set_yticks(y, [f"{a}: {v}" for a, v in zip(S.axis, S.variant)], fontsize=7)
-    ax.set_xlabel("nearest obstacle found within 0.25 m (best over the threshold sweep)")
-    ax.set_title(f"One change at a time from the base (CA-CFAR defaults, dashed lines)", fontsize=10)
-    ax.legend(fontsize=7, loc="lower right")
+    fig, axs = plt.subplots(1, 2, figsize=(12, 0.27 * len(S) + 1.8), sharey=True)
+    panels = (("pd_at_10", "pd_at_20", "10 % early", "20 % early",
+               "carried: nearest obstacle found (±0.25 m)"),
+              ("obj_pd_at_1", "obj_pd_at_2", "≤ 1 other / frame", "≤ 2 other / frame",
+               "static: placed objects found (±0.25 m)"))
+    for ax, (k1, k2, l1, l2, title) in zip(axs, panels):
+        if k1 not in S:
+            continue
+        prev = None
+        for yy, ax_name in zip(y, S.axis):                 # light bands per axis group
+            if ax_name != prev and list(S.axis).index(ax_name) % 2 == 0:
+                pass
+            prev = ax_name
+        groups = S.groupby("axis", sort=False).indices
+        for gi, (g, ix) in enumerate(groups.items()):
+            if gi % 2 == 0:
+                ax.axhspan(y[ix].min() - 0.5, y[ix].max() + 0.5, color="#f0efec", lw=0, zorder=0)
+        ax.axvline(base[k1], color=SERIES[0], lw=1, ls="--")
+        ax.axvline(base[k2], color=SERIES[1], lw=1, ls="--")
+        for yy, (_, r) in zip(y, S.iterrows()):
+            ax.plot([r[k1], r[k2]], [yy, yy], color="#cfcec9", lw=1.5, zorder=1)
+        ax.plot(S[k1], y, "o", color=SERIES[0], ms=6, label=l1, zorder=2)
+        ax.plot(S[k2], y, "s", color=SERIES[1], ms=6, label=l2, zorder=2)
+        ax.set_title(title, fontsize=9); ax.legend(fontsize=7, loc="lower right")
+        ax.set_xlim(left=0)
+    axs[0].set_yticks(y, [f"{a}: {v}" for a, v in zip(S.axis, S.variant)], fontsize=7)
+    fig.suptitle("One change at a time from the base pipeline (CA-CFAR defaults = dashed lines); best value over "
+                 "each row's threshold sweep", fontsize=10)
     save(fig, "paper_ablation", pdf)
 
 
-PAPER = [fig_operating_curves, fig_outcome_vs_distance, fig_ablation, fig_noise, fig_fp_causes]
+def fig_floor_margin(plt, pdf):
+    """Carried takes, CA-CFAR tuned for the arc view: frame outcome by how far before (negative) or after the true
+    nearest obstacle the floor enters the beam (+-30 deg elevation), per environment. Table floor_margin (step
+    `floor`)."""
+    T = C.load_table("floor_margin", required=False)
+    if T is None:
+        return
+    T = T[(T.family == "ca_cfar") & (T.variant == "tuned arc")].copy()
+    order = ["(-10.0, -1.0]", "(-1.0, -0.5]", "(-0.5, -0.25]", "(-0.25, 0.25]", "(0.25, 0.5]", "(0.5, 1.0]",
+             "(1.0, 10.0]"]
+    labels = ["< -1", "-1..-0.5", "-0.5..-0.25", "±0.25", "0.25..0.5", "0.5..1", "> 1"]
+    envs = [e for e in ("outdoor", "indoor") if e in set(T.env)]
+    TF = C.load_table("truth_frames", required=False)
+    height = {}
+    if TF is not None:
+        for env in envs:
+            x = TF[TF["take"].isin([t for t in C.CARRIED if t.startswith(env)])].floor_h
+            height[env] = f" (radar {-x.median():.1f} m above the floor)" if len(x) else ""
+    fig, axs = plt.subplots(1, len(envs), figsize=(4.6 * len(envs), 3.9), sharey=True)
+    for ax, env in zip(np.atleast_1d(axs), envs):
+        g = T[T.env == env].set_index("margin").reindex(order)
+        f_, e_ = g.found.fillna(0).to_numpy(), g.early.fillna(0).to_numpy()
+        pos = np.arange(len(order))
+        bottom = np.zeros(len(order))
+        for val, lab, col in ((f_, "found (±0.25 m)", "#1baf7a"), (e_, "early alarm", "#eda100"),
+                              (1 - f_ - e_, "missed / late", "#e34948")):
+            ax.bar(pos, val, bottom=bottom, color=col, width=0.85, edgecolor=SURF, lw=1, label=lab)
+            bottom += val
+        for p_, n in zip(pos, g.frames.fillna(0).astype(int)):
+            ax.text(p_, 1.01, f"{n}", ha="center", fontsize=6, color=INK2)
+        ax.axvspan(-0.5, 2.5, color=GRID, alpha=0.5, zorder=-1, lw=0)
+        ax.text(1.0, -0.33, "floor in the beam\nbefore the obstacle", ha="center", fontsize=7, color=INK2,
+                transform=ax.get_xaxis_transform())
+        ax.set_xticks(pos, labels, rotation=35, fontsize=7)
+        ax.set_title(f"{env}{height.get(env, '')}", fontsize=9)
+        ax.set_ylim(0, 1.08)
+        ax.set_xlabel("floor-in-beam range minus obstacle range (m)")
+    np.atleast_1d(axs)[0].set_ylabel("share of frames")
+    h, l = np.atleast_1d(axs)[0].get_legend_handles_labels()
+    fig.legend(h, l, fontsize=7, loc="upper center", ncol=3, bbox_to_anchor=(0.5, 0.93), frameon=False)
+    fig.suptitle("Carried takes, CA-CFAR tuned for the arc view, obstacle beyond 0.75 m (numbers: frames per bin)",
+                 fontsize=10)
+    fig.subplots_adjust(top=0.80)
+    save(fig, "paper_floor_margin", pdf)
+
+
+def fig_pitch(plt, pdf):
+    """Carried takes, tuned CA-CFAR: share of frames found, by true obstacle distance x radar pitch, one row per
+    environment (pooling them mixes two different failure causes). Table floor_pitch (step `floor`)."""
+    T = C.load_table("floor_pitch", required=False)
+    if T is None:
+        return
+    pb = ["(-90, -25]", "(-25, -15]", "(-15, -5]", "(-5, 90]"]
+    db = ["(0.3, 0.75]", "(0.75, 1.25]", "(1.25, 2.0]", "(2.0, 8.0]"]
+    envs = [e for e in ("outdoor", "indoor") if e in set(T.env)]
+    fig, axs = plt.subplots(len(envs), 2, figsize=(10, 3.0 * len(envs)), squeeze=False)
+    for r, env in enumerate(envs):
+        g = T[T.env == env]
+        for c, (val, title, cmap) in enumerate((("found", "found (±0.25 m)", "Greens"), ("early", "early alarm",
+                                                                                         "Oranges"))):
+            ax = axs[r, c]
+            M = g.pivot_table(index="dist", columns="pitch_bin", values=val).reindex(index=db, columns=pb)
+            N = g.pivot_table(index="dist", columns="pitch_bin", values="frames").reindex(index=db, columns=pb)
+            M = M.where(N >= 30)
+            ax.imshow(M.to_numpy(float), cmap=cmap, vmin=0, vmax=1, origin="lower", aspect="auto")
+            for i in range(len(db)):
+                for j in range(len(pb)):
+                    v = M.iloc[i, j]
+                    if np.isfinite(v):
+                        ax.text(j, i, f"{v:.2f}\n({int(N.iloc[i, j])})", ha="center", va="center", fontsize=7,
+                                color="white" if v > 0.55 else INK)
+            ax.set_xticks(range(len(pb)), ["< -25°", "-25..-15°", "-15..-5°", "> -5° (level)"], fontsize=7)
+            ax.set_yticks(range(len(db)), ["0.3-0.75 m", "0.75-1.25 m", "1.25-2 m", "2-8 m"], fontsize=7)
+            ax.set_title(f"{env}: {title}", fontsize=9); ax.grid(False)
+            if r == len(envs) - 1:
+                ax.set_xlabel("radar pitch (phone gravity)")
+        axs[r, 0].set_ylabel("true nearest obstacle")
+    fig.suptitle("Carried takes, tuned CA-CFAR, by pitch (cells with < 30 frames left blank)", fontsize=10)
+    save(fig, "eval_pitch", pdf)
+
+
+PAPER = [fig_operating_curves, fig_outcome_vs_distance, fig_floor_margin, fig_ablation, fig_noise, fig_fp_causes]
 FIGS = [fig_noise, fig_targets, fig_timing, fig_calib, fig_sync, fig_truth, fig_eval_bars, fig_default_vs_tuned,
         fig_eval_env, fig_rings,
-        fig_fp_causes, fig_pr, fig_pd_range, fig_arc, fig_cost, fig_pareto, fig_universality, fig_cordic]
+        fig_fp_causes, fig_pr, fig_pd_range, fig_arc, fig_cost, fig_pareto, fig_universality, fig_pitch, fig_cordic]
 
 
 def run(only=None, pdf=False, all_figs=False):

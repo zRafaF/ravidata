@@ -18,12 +18,12 @@ from .radar import features_cached as features
 
 PRE_KEYS = ("bg", "bg_alpha", "doppler", "zero_band", "combine")
 COMMON = dict(bg="none", bg_alpha=0.98, doppler="sum", zero_band=0, combine="mean", r_min=0.30, r_max=4.10,
-              m=1, n=1, spread=1, hgate=False, radar_h=1.1, h_min=0.15, h_max=2.0, el_off=0.0,
+              m=1, n=1, spread=1, hgate=False, radar_h=1.1, h_min=0.15, h_max=np.inf, el_off=0.0,
               integ=0.0, track=False, track_gate=0.3, track_confirm=3, track_hold=5, track_alpha=0.5, track_beta=0.1)
 # integ: causal non-coherent integration of the power over frames before detection, P_k = a P_k-1 + (1-a) P_k.
 # track: nearest-obstacle tracker after everything (alpha-beta on the nearest detection, confirm / hold).
 # hgate: radar + IMU fusion -- the phone's gravity levels each detection's elevation; returns that land on the floor
-# (or overhead) are dropped before any clustering / grid. radar_h = assumed radar height above the floor.
+# are dropped before any clustering / grid (nothing overhead). radar_h = assumed radar height above the floor.
 
 DEFAULTS = {
     "thr_nearest": dict(COMMON, k_db=12.0),

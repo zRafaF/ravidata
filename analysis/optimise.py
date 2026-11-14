@@ -27,7 +27,7 @@ from . import score as SC
 SUFF = ["frames", "n_truth", "tp10", "tp25", "tp50", "tp100", "frames_c", "n_truth_c", "n_det_c", "tpc10", "tpc25",
         "tpc50", "tpc100", "gospa_sum", "n_truth_r", "n_det_r",
         "rtp50", "near_frames", "near_hit", "near_early", "cor_frames", "cor_hit", "cor_fa", "cor_free",
-        "arc_frames", "arc_cov", "arc_hit", "arc_early"]
+        "arc_frames", "arc_cov", "arc_hit", "arc_early", "obj_frames", "obj_n", "obj_hit", "obj_other"]
 
 
 def suff(Fr) -> dict:
@@ -44,6 +44,9 @@ def suff(Fr) -> dict:
     arc = dict(arc_frames=int(a_ok.sum()), arc_cov=int(cov.sum()),
                arc_hit=int((a_b & (np.abs(ad - at) <= 0.25)).sum()),
                arc_early=int((cov & np.isfinite(ad) & (~a_ok | (ad < at - 0.25))).sum()))
+    Fo = F[F.obj_n > 0] if "obj_n" in F else F.iloc[:0]
+    arc.update(obj_frames=len(Fo), obj_n=float(Fo.obj_n.sum()) if len(Fo) else 0.0,
+               obj_hit=float(Fo.obj_hit.sum()) if len(Fo) else 0.0, obj_other=float(Fo.obj_other.sum()) if len(Fo) else 0.0)
     return arc | dict(frames=len(F), n_truth=F.n_truth.sum(), tp10=F.tp10.sum(), tp25=F.tp25.sum(),
                 tp50=F.tp50.sum(), tp100=F.tp100.sum(), frames_c=len(Fc), n_truth_c=Fc.n_truth.sum(),
                 n_det_c=Fc.n_det.sum(), tpc10=Fc.tp10.sum(), tpc25=Fc.tp25.sum(), tpc50=Fc.tp50.sum(),
@@ -76,6 +79,8 @@ def metrics(s: dict) -> dict:
     out["arc_early_rate"] = s["arc_early"] / s["arc_cov"] if s["arc_cov"] else np.nan
     # found AND not early (a pd - early difference would prefer 'report nothing' over any noisy detector)
     out["arc_score"] = out["arc_pd"] * (1 - out["arc_early_rate"])
+    out["obj_pd"] = s["obj_hit"] / s["obj_n"] if s["obj_n"] else np.nan
+    out["obj_other_per_frame"] = s["obj_other"] / s["obj_frames"] if s["obj_frames"] else np.nan
     return out
 
 

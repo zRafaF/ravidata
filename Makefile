@@ -3,7 +3,7 @@
 # Code: https://github.com/zRafaF/ravidata   Data: https://huggingface.co/datasets/DoninhaD/ravidata
 .PHONY: help install test rec rec-sim align pack calib targets data data-all dataset dataset-upload \
         maps fuse static-depth static-depth-refit static-depth-upload viz analysis analysis-quick plots an-tags an-extrinsic an-truth \
-        an-sensor an-eval an-opt an-eval-tuned an-cordic an-ablation story report play pod pod-test pod-status pod-watch pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
+        an-sensor an-eval an-opt an-eval-tuned an-floor an-cordic an-ablation story report play pod pod-test pod-status pod-watch pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
 
 HF_REPO ?= DoninhaD/ravidata
 TAKES   ?= indoor_course outdoor_course
@@ -64,7 +64,7 @@ help:
 	@echo "                        results/analysis-quick: run this first after any change"
 	@echo "  make analysis         every step but CORDIC, full data, in order (hours: see docs/analysis.md);"
 	@echo "                        FROM=truth starts there (the steps before it already done)"
-	@echo "  make an-tags an-extrinsic an-truth an-sensor an-eval an-ablation an-opt an-eval-tuned an-cordic"
+	@echo "  make an-tags an-extrinsic an-truth an-sensor an-eval an-ablation an-opt an-eval-tuned an-floor an-cordic"
 	@echo "                        one step (QUICK=1 for its quick version)"
 	@echo "  make plots            figures from the existing tables only (seconds); QUICK=1 for the quick tables"
 	@echo "  make story            explanatory figures (how the truth is built, radar range-time maps with the truth)"
@@ -180,6 +180,8 @@ an-opt:
 	$(AN) opt $(AN_ARGS)
 an-eval-tuned:
 	$(AN) eval-tuned $(AN_ARGS)
+an-floor:                              # where the early alarms come from (floor in beam, phantom); minutes
+	$(AN) floor $(AN_ARGS)
 an-cordic:
 	$(AN) cordic $(AN_ARGS)
 plots:

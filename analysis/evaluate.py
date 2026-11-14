@@ -22,6 +22,14 @@ def _truth_tables():
     return {k: g for k, g in S.groupby("rec")}, {k: g for k, g in F.groupby("rec")}
 
 
+@lru_cache(maxsize=1)
+def _objects():
+    O = C.load_table("truth_objects", required=False)
+    if O is None or not len(O):
+        return {}
+    return {k: g.r.to_numpy() for k, g in O.groupby("rec")}
+
+
 def truth_arrays(key: str, n: int):
     Sg, Fg = _truth_tables()
     if key not in Fg:
@@ -44,7 +52,8 @@ def truth_arrays(key: str, n: int):
         cov_arc = np.zeros(n, bool); cov_arc[:m] = ok
     else:
         cov_arc = np.zeros(n, bool)
-    return piv("obs_r"), piv("obs_az"), piv("floor_r"), comp, cor, cov, arc, cov_arc
+    obj = _objects().get(key, np.zeros(0))
+    return piv("obs_r"), piv("obs_az"), piv("floor_r"), comp, cor, cov, arc, cov_arc, obj
 
 
 def eval_rec(rec, family, params, variant="default", F=None, keep_dets=True, trig=None):

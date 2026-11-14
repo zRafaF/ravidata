@@ -121,8 +121,9 @@ def heights(F, f, r, az, el, radar_h):
     return radar_h + r * (v * up).sum(1)
 
 
-def height_gate(F, d, radar_h=1.1, h_min=0.15, h_max=2.0, el_off=0.0):
-    """Drop detections the IMU-levelled elevation puts on the floor (< h_min) or overhead (> h_max). el_off (deg)
+def height_gate(F, d, radar_h=1.1, h_min=0.15, h_max=np.inf, el_off=0.0):
+    """Drop detections the IMU-levelled elevation puts on the floor (< h_min); nothing is removed overhead
+    (h_max = inf: overhead structures are out of scope). el_off (deg)
     corrects a residual elevation bias (tunable: the calibration's elevation targets span only a few degrees)."""
     if not len(d["f"]):
         return d

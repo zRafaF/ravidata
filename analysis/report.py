@@ -93,6 +93,17 @@ def run():
               "arc_* = carried takes, nearest obstacle in the beam, direction ignored (found within 0.25 m / early "
               "alarm); near_* = nearest in the camera view; f1_50 = per 4° sector at 0.5 m; r_f1_50 = range only; "
               "lo/hi = 95 % block-bootstrap.", "", md(A[[c for c in cols if c in A]]), ""]
+    for v, title in (("", "default"), ("_hgate", "default + IMU height gate"), ("_tuned_pooled_arc", "tuned arc")):
+        S = C.load_table("eval_summary" + v, required=False)
+        if S is None or "obj_pd" not in S:
+            continue
+        A = _top(S)[["family", "obj_pd", "obj_other_per_frame"]]
+        L += [f"## Static takes, placed objects ({title}): found within 0.25 m (any angle), other returns per frame",
+              "", md(A), ""]
+    O = C.load_table("truth_objects", required=False)
+    if O is not None and len(O):
+        L += ["## Placed objects of the static takes (still chairs and brooms, radar frame)", "",
+              md(O[["rec", "id", "kind", "r", "az", "el"]], "{:.2f}"), ""]
     for ob, key, sel in (("arc", "arc_pd", "tuned_arc"), ("plane", "f1_50", "tuned_f1")):
         R = C.load_table(f"opt_results_pooled_{ob}", required=False)
         if R is None:
@@ -136,10 +147,48 @@ def run():
         Cz = D.groupby("family").cause.value_counts(normalize=True).unstack().fillna(0)
         Cz = Cz.rename(columns={"": "matched"}).reset_index()
         L += ["## What the unmatched detections are (share of all scored detections, tuned arc)", "", md(Cz, "{:.2f}"), ""]
+    Fm = C.load_table("floor_margin", required=False)
+    if Fm is not None:
+        order = ["(-10.0, -1.0]", "(-1.0, -0.5]", "(-0.5, -0.25]", "(-0.25, 0.25]", "(0.25, 0.5]", "(0.5, 1.0]",
+                 "(1.0, 10.0]"]
+        for lab in ("tuned arc", "default"):
+            x = Fm[(Fm.family == "ca_cfar") & (Fm.variant == lab)]
+            if not len(x):
+                continue
+            W = x.pivot_table(index="margin", columns="env", values=["frames", "found", "early"]).reindex(order)
+            W.columns = [f"{e} {v}" for v, e in W.columns]
+            W = W[sorted(W.columns)].reset_index().rename(columns={"margin": "floor margin (m)"})
+            for c in [c for c in W.columns if c.endswith("frames")]:
+                W[c] = W[c].astype("Int64")
+            L += [f"## Floor in the beam before the obstacle? (carried, CA-CFAR {lab}, obstacle beyond 0.75 m)", "",
+                  "floor margin = range at which the floor enters the beam (+-30 deg elevation) minus the true nearest "
+                  "obstacle range; negative = the floor comes first.", "", md(W, "{:.2f}"), ""]
+    Fp = C.load_table("floor_pitch", required=False)
+    if Fp is not None:
+        pb = ["(-90, -25]", "(-25, -15]", "(-15, -5]", "(-5, 90]"]
+        for env in sorted(set(Fp.env)):
+            x = Fp[Fp.env == env]
+            W = x.pivot_table(index="dist", columns="pitch_bin", values="found").reindex(columns=pb)
+            N = x.pivot_table(index="dist", columns="pitch_bin", values="frames").reindex(columns=pb)
+            W = W.where(N >= 30)
+            W.columns = [f"found, pitch {c}" for c in W.columns]
+            W["frames"] = N.sum(axis=1).astype("Int64")
+            L += [f"## Found by obstacle distance x radar pitch ({env}, tuned CA-CFAR; blank: < 30 frames)", "",
+                  md(W.reset_index().rename(columns={"dist": "true nearest (m)"}), "{:.2f}"), ""]
+    Ph = C.load_table("phantom", required=False)
+    if Ph is not None:
+        L += ["## Alarms with nothing within 2 m: what the camera map has at that range", "",
+              "Medians over sampled frames (table phantom_frames). alarm_at_floor_in_beam: share of frames whose alarm "
+              "is within 0.25 m of where the floor enters the beam. Control rows: the still radar on a tripod.", "",
+              md(Ph, "{:.2f}"), ""]
     A = C.load_table("ablation_summary", required=False)
     if A is not None:
-        L += ["## Ablation (one change at a time from CA-CFAR defaults; best found over a threshold sweep)", "",
-              md(A[["axis", "variant", "pd_at_5", "pd_at_10", "pd_at_20", "auc_30", "near_pd_max", "f1_50_max"]]), ""]
+        L += ["## Ablation (one change at a time from CA-CFAR defaults, each over a threshold sweep)", "",
+              "pd_at_X: carried takes, arc view, best 'found' with at most X % early alarms; obj_pd_at_Y: static takes, "
+              "share of placed objects (chairs, brooms) with a detection within 0.25 m of their range, with at most Y "
+              "other returns per frame.", "",
+              md(A[[c for c in ["axis", "variant", "pd_at_5", "pd_at_10", "pd_at_20", "auc_30", "obj_pd_at_1",
+                                "obj_pd_at_2", "obj_pd_max"] if c in A]]), ""]
     Cst = C.load_table("eval_cost", required=False)
     if Cst is not None:
         Cs = Cst.groupby("family").ms_per_frame.median().reset_index()

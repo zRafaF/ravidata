@@ -118,7 +118,7 @@ def run_legacy(F, p, trig=None, poses=None):
     if p.get("hgate"):                                       # the firmware also kept a height per cell
         from .detectors import heights
         h = heights(F, f, np.tile(F.r, n), az, el + p.get("el_off", 0.0), p.get("radar_h", 1.1))
-        bad = np.isfinite(h) & ((h <= p.get("h_min", 0.15)) | (h >= p.get("h_max", 2.0)))
+        bad = np.isfinite(h) & ((h <= p.get("h_min", 0.15)) | (h >= p.get("h_max", np.inf)))
         E = np.where(bad.reshape(n, B), 0.0, E)
     az = az.reshape(n, B)
     deltas = None
