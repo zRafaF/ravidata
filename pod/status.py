@@ -1,4 +1,5 @@
-"""Progress of a pod run, readable while `make pod` runs in another tmux window: `make pod-status`.
+"""Progress of a pod run, readable while `make pod` runs in another tmux window: `make pod-status`
+(`python3 pod/status.py [work_dir] [N log lines, default 25]`).
 
 Standard library only (works before / without the project env). Reads work/: the stage times
 (metrics/stages.csv), the windows each model has written so far (out/<model>/<take>/win_*.npz), each run.json
@@ -15,7 +16,10 @@ import sys
 import time
 from pathlib import Path
 
-WORK = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("work")
+ARGS = [a for a in sys.argv[1:] if not a.isdigit()]
+WORK = Path(ARGS[0]) if ARGS else Path("work")
+N_LINES = int(next((a for a in sys.argv[1:] if a.isdigit()), "25"))     # log lines shown at the end
+STAGES = ["setup", "data", "frames", "check", "run", "upload", "stop"]
 
 
 def n_windows(n: int, size: int, overlap: int) -> int:
@@ -44,19 +48,22 @@ def main():
     if not WORK.exists():
         print(f"{WORK}/ does not exist yet: run this inside the ravidata folder (cd /workspace/ravidata)")
         return
-    stage = "?"
     log = WORK / "logs" / "pod.log"
     lines = log.read_text(encoding="utf-8", errors="replace").splitlines() if log.exists() else []
-    for ln in reversed(lines):
-        if ln.startswith("=== ") and ln.endswith(" ==="):
-            stage = ln.strip("= ").strip()
-            break
-    print(f"stage now: {stage}")
     st = WORK / "metrics" / "stages.csv"
-    if st.exists():
-        for row in st.read_text().splitlines():
-            name, a, b, res = (row.split(",") + ["", "", "", ""])[:4]
-            print(f"  {name:7s} {fmt(int(b) - int(a)):>7s}  {res}")
+    rows = [(r.split(",") + ["", "", "", ""])[:4] for r in st.read_text().splitlines()] if st.exists() else []
+    done_stages = [r[0] for r in rows]
+    failed = [r[0] for r in rows if r[3] not in ("ok", "")]
+    if failed:
+        stage = f"{failed[0]} FAILED -> upload / stop"
+    else:
+        stage = next((s for s in STAGES if s not in done_stages), "finished")
+        if stage == "upload" and any("=== stop ===" in ln for ln in lines[-50:]):
+            stage = "stop"
+    since = int(rows[-1][2]) if rows else None
+    print(f"stage now: {stage}" + (f" (for {fmt(time.time() - since)})" if since else ""))
+    for name, a, b, res in rows:
+        print(f"  {name:7s} {fmt(int(b) - int(a)):>7s}  {res}")
 
     frames = {}
     for fj in sorted((WORK / "frames").glob("*/frames.json")):
@@ -103,9 +110,9 @@ def main():
     except Exception:
         pass
     if lines:
-        print("\nlast log lines:")
-        for ln in lines[-4:]:
-            print("  " + ln[:150])
+        print(f"\nlast {N_LINES} log lines (work/logs/pod.log):")
+        for ln in lines[-N_LINES:]:
+            print("  " + ln[:160])
     print(time.strftime("(%H:%M:%S)"))
 
 

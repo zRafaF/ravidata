@@ -36,7 +36,7 @@ help:
 	@echo "                        prints pass/fail, GPU memory and a time estimate; uploads nothing"
 	@echo "  make pod HF_TOKEN=... setup + data + frames + check + run + upload + stop  (inside tmux)"
 	@echo "  make pod-status       progress of a running 'make pod' (windows done per model, time left, GPU)"
-	@echo "  make pod-watch        the same, refreshed every 30 s (Ctrl-C to quit); see docs/pod.md for tmux"
+	@echo "  make pod-watch        the same, refreshed every 30 s (Ctrl-C quits the watch only); LOG_LINES=40 for more log"
 	@echo "  make pod-<stage>      one stage: setup data frames check run upload stop"
 	@echo "  STOP=1 (default) stops the RunPod pod once the maps are on Hugging Face; STOP=0 keeps it"
 	@echo "  variables: MODELS='$(MODELS)' TAKES='$(TAKES)'"
@@ -94,11 +94,12 @@ pod: $(UV)
 pod-test pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop: $(UV)
 	$(POD_ENV) bash pod/pod.sh $(@:pod-%=%)
 
+LOG_LINES ?= 25
 pod-status:
-	@python3 pod/status.py
+	@python3 pod/status.py $(LOG_LINES)
 
 pod-watch:
-	watch -n 30 python3 pod/status.py
+	watch -n 30 python3 pod/status.py $(LOG_LINES)
 
 pod-clean:
 	rm -rf work pod/third_party

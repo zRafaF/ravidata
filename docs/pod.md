@@ -62,7 +62,7 @@ Open a second tmux window (`Ctrl-b c`) inside `/workspace/ravidata`:
 | command | shows |
 |---|---|
 | `make pod-status` | current stage, stage times, windows done / total per model and take, time left, GPU now, last log lines |
-| `make pod-watch` | the same every 30 s (`Ctrl-C` to quit) |
+| `make pod-watch` | the same every 30 s; `Ctrl-C` quits the watch only, `make pod` keeps running; `make pod-watch LOG_LINES=40` for more log |
 | `tail -f work/logs/pod.log` | the full log as it grows (`Ctrl-C` to quit) |
 | `less +G work/logs/pod.log` | the whole log, scrollable (`q` to quit) |
 | `watch -n 2 nvidia-smi` | GPU use and memory, live |
