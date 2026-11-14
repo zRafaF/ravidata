@@ -14,6 +14,9 @@ work/
 dataset/
 *.nsscan.npz
 
+# analysis: full results are kept (results/analysis-v1); quick tests are not
+results/analysis-quick/
+
 # GPU pod: cloned model repos + their environments
 pod/third_party/
 

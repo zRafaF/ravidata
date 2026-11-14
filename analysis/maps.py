@@ -83,7 +83,8 @@ class TakeMaps:
         if tags_df is None or len(tags_df) == 0:
             self.scale_w = np.full(len(self.wfiles), np.nan)
             return rows
-        T = tags_df[(tags_df["take"] == self.take) & (tags_df.reproj_px < 2.0) & (tags_df.view_deg < 70)]
+        T = tags_df[(tags_df["take"] == self.take) & (tags_df.reproj_px < 2.0) & (tags_df.view_deg < 70)
+                    & tags_df.id.isin(list(C.TAG_KIND))]          # only the tags placed for the recording
         vf2i = {int(v): i for i, v in enumerate(self.vf)}
         for _, r in T.iterrows():
             i = vf2i.get(int(r.frame))
@@ -111,18 +112,24 @@ class TakeMaps:
         return float(s) if np.isfinite(s) else 1.0
 
     def pose_metric(self, i: int):
-        """Camera->world (fused trajectory) in metres for keyframe i, or None without fused poses."""
-        if self.fused is None:
+        """Camera->world (fused trajectory) in metres for keyframe i, or None without fused poses (same metric
+        factor as trajectory(), so keyframe and interpolated poses agree)."""
+        tr = self.trajectory()
+        if tr is None:
             return None
         kf = list(self.fused["keyframes"])
         if i not in kf:
             return None
-        n = kf.index(i)
-        k = self.owner[i][0]
-        kappa = self.metric(k) / float(self.fused["window_s"][k])        # global units -> m
-        T = self.fused["c2w"][n].copy()
-        T[:3, 3] *= kappa
-        return T
+        return tr[1][kf.index(i)]
+
+    def fused_points(self):
+        """Fused map points (metres, world frame of the trajectory) and weights, or None."""
+        p = MAPS / "fused" / self.model / self.take / "fused.npz"
+        tr = self.trajectory()
+        if not p.exists() or tr is None:
+            return None
+        z = np.load(p)
+        return z["xyz"].astype(np.float64) * tr[2], z["weight"].astype(np.float64)
 
     @lru_cache(maxsize=1)
     def trajectory(self):

@@ -1,0 +1,11 @@
+{
+ "t_rc": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "range_bias_m": 0.1168575863238499,
+ "n_targets": 39,
+ "range_resid_rms_m": 0.11715881992057185,
+ "note": "radar origin in camera coordinates (x right, y down, z forward); r_meas = |p - t_rc| + b"
+}

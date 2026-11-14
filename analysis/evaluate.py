@@ -37,7 +37,14 @@ def truth_arrays(key: str, n: int):
     cov = np.zeros(n, bool); cov[:m] = fr.covered.to_numpy()[:m]
     comp = np.zeros(n, bool); comp[:m] = fr.complete.to_numpy()[:m]
     cor = np.full(n, np.nan); cor[:m] = fr.corridor_r.to_numpy()[:m]
-    return piv("obs_r"), piv("obs_az"), piv("floor_r"), comp, cor, cov
+    arc = np.full(n, np.nan)
+    if "arc_r" in fr:                          # arc truth only where it covers the radar beam (local map)
+        ok = fr.arc_complete.fillna(False).to_numpy(bool)[:m]
+        arc[:m] = np.where(ok, fr.arc_r.to_numpy()[:m], np.nan)
+        cov_arc = np.zeros(n, bool); cov_arc[:m] = ok
+    else:
+        cov_arc = np.zeros(n, bool)
+    return piv("obs_r"), piv("obs_az"), piv("floor_r"), comp, cor, cov, arc, cov_arc
 
 
 def eval_rec(rec, family, params, variant="default", F=None, keep_dets=True, trig=None):
@@ -101,7 +108,7 @@ def run(takes=None, families=None, variant="default", params_by_family=None, con
     frames, dets, costs = [], [], []
     jobs = [(take, rec, fam) for take in C.available_takes(takes) for rec in C.recordings(take, configs)
             for fam in families if not (fam in PL.TWO_D_ONLY and not rec.is2d)
-            and not (fam == "grid_oracle" and take not in C.CARRIED)]
+            and not (fam.endswith("_oracle") and take not in C.CARRIED)]
     pb = C.bar(total=len(jobs), desc=f"eval {variant}", unit="run")
     for take, rec, fam in jobs:
         pb.update()
@@ -142,6 +149,7 @@ def run(takes=None, families=None, variant="default", params_by_family=None, con
     S3 = summarise(Fa, Da, by=("family", "variant"), boot=True)
     S = pd.concat([S1, S2, S3], ignore_index=True)
     C.save_table(S, f"eval_summary{suffix}")
-    show = S3[["family", "variant", "f1_50", "recall_50", "precision_50", "ap_50", "gospa", "cor_pd", "cor_err_m"]]
+    show = S3[[c for c in ["family", "variant", "f1_50", "recall_50", "precision_50", "gospa", "near_pd", "arc_pd",
+                           "arc_early_rate", "arc_alert_recall", "arc_alert_false_rate"] if c in S3]]
     C.log("\n" + show.round(3).to_string(index=False))
     return S

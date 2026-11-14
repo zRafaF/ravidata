@@ -82,7 +82,7 @@ def target_frames(tags, rec, window_m=0.25):
     return rows
 
 
-def sync_rows(rec, lags=np.arange(-1.0, 1.0001, 0.04)):
+def sync_rows(rec, lags=np.arange(-2.5, 2.5001, 0.04)):
     from .evaluate import truth_arrays
     from . import pipeline as PL
     d, _, F = PL.detect(rec, "thr", {}, C.default_max_frames())

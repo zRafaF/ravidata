@@ -87,6 +87,8 @@ def features(rec: C.Recording, pre: dict | None = None, max_frames: int | None =
     pw = np.abs(x) ** 2                                    # (n, D, 3, B)
     if p["combine"] == "coh":
         RDc = np.abs(x.sum(2)) ** 2 / 3.0
+    elif p["combine"] == "rx1":                            # one receiver (the legacy firmware used RX1)
+        RDc = pw[:, :, 1]
     elif p["combine"] == "max":
         RDc = pw.max(2)
     else:
@@ -97,9 +99,10 @@ def features(rec: C.Recording, pre: dict | None = None, max_frames: int | None =
     S_az = (xs[:, :, b] * np.conj(xs[:, :, a])).sum(1)
     a, b = PAIRS["el"]
     S_el = (xs[:, :, b] * np.conj(xs[:, :, a])).sum(1)
-    use = (rd.range_m >= G.R_MIN) & (rd.range_m <= G.R_MAX)
+    r_axis = rd.range_m - range_bias()                    # calibrated range (extrinsic step: r_meas = r_true + b)
+    use = (r_axis >= G.R_MIN) & (r_axis <= G.R_MAX)
     noise = np.median(P[:, use], 1)
-    return Feat(rec.key, rec.take, rec.config, rd.t, rd.range_m, P, noise, S_az, S_el,
+    return Feat(rec.key, rec.take, rec.config, rd.t, r_axis, P, noise, S_az, S_el,
                 RDc if D > 1 else None, rd.v_axis, p)
 
 
@@ -127,6 +130,13 @@ def phase_to_angle(phi, sign=1.0, offset_rad=0.0):
     """Interferometric angle (deg) from a phase difference (rad): arcsin(wrap(sign*phi - off) / (2 pi d/lambda))."""
     ph = np.angle(np.exp(1j * (sign * np.asarray(phi, float) - offset_rad)))
     return np.degrees(np.arcsin(np.clip(ph / (2 * np.pi * D_OVER_LAMBDA), -1.0, 1.0)))
+
+
+@lru_cache(maxsize=1)
+def range_bias() -> float:
+    """Range bias b from the `extrinsic` step (0 before it has run); detections use range_m - b."""
+    e = C.load_json("extrinsic", None) or {}
+    return float(e.get("range_bias_m", 0.0))
 
 
 @lru_cache(maxsize=1)

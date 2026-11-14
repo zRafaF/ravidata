@@ -107,6 +107,30 @@ def rd_mask(F: Feat, guard=(1, 1), train=(2, 4), k_db=12.0):
     return (F.RD > cfar_rd(F.RD, guard, train, k_db)).any(1)
 
 
+def heights(F, f, r, az, el, radar_h):
+    """Height above the floor of detections: radar_h + r * (direction . up), 'up' from the phone gravity at the frame
+    time (the IMU levels the radar's own elevation angle). nan where the elevation is unknown."""
+    from . import imu
+    from .geometry import up_from_gravity
+    g = imu.at(F.take, F.t, "Gravity", smooth_s=0.2)
+    if g is None:
+        return np.full(len(r), np.nan)
+    up = up_from_gravity(g)[f]
+    a, e = np.radians(np.nan_to_num(az)), np.radians(el)
+    v = np.stack([np.cos(e) * np.sin(a), -np.sin(e), np.cos(e) * np.cos(a)], 1)
+    return radar_h + r * (v * up).sum(1)
+
+
+def height_gate(F, d, radar_h=1.1, h_min=0.15, h_max=2.0, el_off=0.0):
+    """Drop detections the IMU-levelled elevation puts on the floor (< h_min) or overhead (> h_max). el_off (deg)
+    corrects a residual elevation bias (tunable: the calibration's elevation targets span only a few degrees)."""
+    if not len(d["f"]):
+        return d
+    h = heights(F, d["f"], d["r"], d["az"], d["el"] + el_off, radar_h)
+    keep = ~np.isfinite(h) | ((h > h_min) & (h < h_max))
+    return {k: v[keep] for k, v in d.items()}
+
+
 def empty_dets():
     z = np.zeros(0)
     return dict(f=z.astype(np.int32), b=z.astype(np.int32), r=z, snr_db=z, az=z, el=z, coh=z)

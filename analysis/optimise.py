@@ -26,7 +26,8 @@ from . import score as SC
 
 SUFF = ["frames", "n_truth", "tp10", "tp25", "tp50", "tp100", "frames_c", "n_truth_c", "n_det_c", "tpc10", "tpc25",
         "tpc50", "tpc100", "gospa_sum", "n_truth_r", "n_det_r",
-        "rtp50", "near_frames", "near_hit", "near_early", "cor_frames", "cor_hit", "cor_fa", "cor_free"]
+        "rtp50", "near_frames", "near_hit", "near_early", "cor_frames", "cor_hit", "cor_fa", "cor_free",
+        "arc_frames", "arc_cov", "arc_hit", "arc_early"]
 
 
 def suff(Fr) -> dict:
@@ -35,7 +36,15 @@ def suff(Fr) -> dict:
     nt, nd = F.near_truth.to_numpy(), F.near_det.to_numpy()
     ct, cd = F.cor_truth.to_numpy(), F.cor_det.to_numpy()
     b, c = np.isfinite(nt) & np.isfinite(nd), np.isfinite(ct) & np.isfinite(cd)
-    return dict(frames=len(F), n_truth=F.n_truth.sum(), tp10=F.tp10.sum(), tp25=F.tp25.sum(),
+    cov = F.arc_covered.to_numpy(bool) if "arc_covered" in F else np.zeros(len(F), bool)
+    at = np.where(cov, F.arc_truth.to_numpy(), np.nan) if "arc_truth" in F else np.full(len(F), np.nan)
+    ad = F.arc_det.to_numpy() if "arc_det" in F else nd
+    a_ok = np.isfinite(at)
+    a_b = a_ok & np.isfinite(ad)
+    arc = dict(arc_frames=int(a_ok.sum()), arc_cov=int(cov.sum()),
+               arc_hit=int((a_b & (np.abs(ad - at) <= 0.25)).sum()),
+               arc_early=int((cov & np.isfinite(ad) & (~a_ok | (ad < at - 0.25))).sum()))
+    return arc | dict(frames=len(F), n_truth=F.n_truth.sum(), tp10=F.tp10.sum(), tp25=F.tp25.sum(),
                 tp50=F.tp50.sum(), tp100=F.tp100.sum(), frames_c=len(Fc), n_truth_c=Fc.n_truth.sum(),
                 n_det_c=Fc.n_det.sum(), tpc10=Fc.tp10.sum(), tpc25=Fc.tp25.sum(), tpc50=Fc.tp50.sum(),
                 tpc100=Fc.tp100.sum(), gospa_sum=Fc.gospa.sum(), n_truth_r=F.n_truth_r.sum(),
@@ -62,6 +71,11 @@ def metrics(s: dict) -> dict:
     out["near_early_rate"] = s["near_early"] / fr
     out["cor_pd"] = s["cor_hit"] / max(s["cor_frames"], 1)
     out["cor_false_alarm_rate"] = s["cor_fa"] / max(s["cor_free"], 1)
+    out["arc_pd"] = s["arc_hit"] / s["arc_frames"] if s["arc_frames"] else np.nan
+    out["arc_miss"] = 1 - out["arc_pd"]
+    out["arc_early_rate"] = s["arc_early"] / s["arc_cov"] if s["arc_cov"] else np.nan
+    # found AND not early (a pd - early difference would prefer 'report nothing' over any noisy detector)
+    out["arc_score"] = out["arc_pd"] * (1 - out["arc_early_rate"])
     return out
 
 
@@ -105,10 +119,18 @@ def storage_url(name: str) -> str:
     return f"sqlite:///{(d / f'{name}.db').as_posix()}"
 
 
+OBJECTIVES = {
+    # name: (the two minimised objectives, {selection name: (metric, sign: -1 = higher is better)})
+    "plane": (("miss_50", "fp_per_frame_50"), {"tuned_f1": ("f1_50", -1), "tuned_gospa": ("gospa", 1)}),
+    "arc": (("arc_miss", "arc_early_rate"), {"tuned_arc": ("arc_score", -1)}),
+}
+
+
 def study_job(args):
     import optuna
-    family, name, train, n_trials, seed = args[:5]
-    q = args[5] if len(args) > 5 else None              # progress queue (one item per finished trial)
+    family, name, train, n_trials, seed, objective = args[:6]
+    q = args[6] if len(args) > 6 else None              # progress queue (one item per finished trial)
+    obj_keys = OBJECTIVES[objective][0]
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     st = optuna.create_study(study_name=name, storage=storage_url(name), load_if_exists=True,
                              directions=["minimize", "minimize"],
@@ -130,7 +152,7 @@ def study_job(args):
         trial.set_user_attr("per_take", json.dumps(per, default=float))
         trial.set_user_attr("ms_per_frame", ms)
         trial.set_user_attr("gospa", m["gospa"])
-        return m["miss_50"], m["fp_per_frame_50"]
+        return tuple(float(np.nan_to_num(m[k], nan=1.0)) for k in obj_keys)
 
     t0 = time.time()
     cbs = [lambda study, trial: q.put(1)] if q is not None else []
@@ -173,14 +195,13 @@ def _trials(name):
     return [t for t in st.trials if t.state.name == "COMPLETE"]
 
 
-SELECT = {"tuned_f1": ("f1_50", -1), "tuned_gospa": ("gospa", 1)}
-
-
-def select(trials, train, how="tuned_f1"):
-    """Index of the training-Pareto trial with the best F1 at 0.5 m (or the lowest GOSPA) on `train`."""
-    key, sgn = SELECT[how]
+def select(trials, train, how="tuned_f1", objective="plane"):
+    """Index of the training-Pareto trial with the best selection metric (F1 at 0.5 m, GOSPA, arc score) on
+    `train`."""
+    obj_keys, sels = OBJECTIVES[objective]
+    key, sgn = sels[how]
     ms = [metrics(_pool(json.loads(t.user_attrs["per_take"]), train)) for t in trials]
-    v = np.array([[m["miss_50"], m["fp_per_frame_50"]] for m in ms])
+    v = np.array([[m[k] for k in obj_keys] for m in ms])
     v = np.nan_to_num(v, nan=1e9)
     pf = np.flatnonzero(pareto(v))
     g = np.array([sgn * ms[i][key] for i in pf], float)
@@ -189,33 +210,38 @@ def select(trials, train, how="tuned_f1"):
     return int(pf[np.nanargmin(g)])
 
 
-def run(takes=None, families=None, n_trials=150, protocol="strict", workers=4, seed=0):
+def run(takes=None, families=None, n_trials=150, protocol="strict", workers=4, seed=0, objective="plane"):
+    obj_keys, SELECT = OBJECTIVES[objective]
+    tag = f"{protocol}_{objective}"
     import pandas as pd
     truth = C.load_table("truth_frames")
     takes = [t for t in C.available_takes(takes) if t in set(truth["take"])]
+    if objective == "arc":                       # the arc truth (whole beam) exists for the carried takes only
+        takes = [t for t in takes if t in C.CARRIED]
     families = families or [f for f in PL.FAMILIES if not f.startswith("app_")]
     jobs = []
     plan = folds(takes, protocol)
     for fam in families:
-        if fam == "grid_oracle":
+        if fam.endswith("_oracle"):
             fam_takes = [t for t in takes if t in C.CARRIED]
         elif fam in PL.TWO_D_ONLY:
             fam_takes = takes
         else:
             fam_takes = takes
         if protocol == "pooled":
-            jobs.append((fam, f"{fam}__pooled", fam_takes, n_trials, seed))
+            jobs.append((fam, f"{fam}__{objective}__pooled", fam_takes, n_trials, seed, objective))
         else:
             for kind, fold, train, test in folds(fam_takes, protocol):
-                jobs.append((fam, f"{fam}__{kind}__{fold}", train, n_trials, seed))
-    C.log(f"optimise: {len(jobs)} studies x {n_trials} trials ({protocol}), {workers} workers")
+                jobs.append((fam, f"{fam}__{objective}__{kind}__{fold}", train, n_trials, seed, objective))
+    C.log(f"optimise: {len(jobs)} studies x {n_trials} trials ({protocol}, objective {objective}: "
+          f"{' & '.join(obj_keys)}), {workers} workers")
     import multiprocessing as mp
     import queue as _queue
     import threading
     mgr = mp.Manager()
     q = mgr.Queue()
     jobs = [j + (q,) for j in jobs]
-    pb = C.bar(total=len(jobs) * n_trials, desc=f"opt {protocol}", unit="trial")
+    pb = C.bar(total=len(jobs) * n_trials, desc=f"opt {tag}", unit="trial")
     stop = threading.Event()
 
     def pump():
@@ -245,16 +271,16 @@ def run(takes=None, families=None, n_trials=150, protocol="strict", workers=4, s
     # ---- tables
     trows, rrows, best = [], [], {}
     for fam in families:
-        fam_takes = [t for t in takes if t in C.CARRIED] if fam == "grid_oracle" else takes
+        fam_takes = [t for t in takes if t in C.CARRIED] if fam.endswith("_oracle") else takes
         for kind, fold, train, test in folds(fam_takes, protocol):
-            name = f"{fam}__pooled" if protocol == "pooled" else f"{fam}__{kind}__{fold}"
+            name = f"{fam}__{objective}__pooled" if protocol == "pooled" else f"{fam}__{objective}__{kind}__{fold}"
             trs = _trials(name)
             if not trs:
                 continue
             if protocol == "strict":
                 for t in trs:
-                    trows.append(dict(study=name, family=fam, protocol=protocol, split=kind, fold=fold,
-                                      trial=t.number, miss_50=t.values[0], fp_per_frame_50=t.values[1],
+                    trows.append(dict(study=name, family=fam, protocol=protocol, objective=objective, split=kind,
+                                      fold=fold, trial=t.number, **{obj_keys[0]: t.values[0], obj_keys[1]: t.values[1]},
                                       gospa=t.user_attrs.get("gospa"), ms_per_frame=t.user_attrs.get("ms_per_frame"),
                                       params=t.user_attrs.get("params")))
             per_def = json.loads(trs[0].user_attrs["per_take"]) if trs[0].number == 0 else None
@@ -262,7 +288,7 @@ def run(takes=None, families=None, n_trials=150, protocol="strict", workers=4, s
                 per_def, _ = eval_params(fam, {}, test)
             sels = [("default", 0, {}, per_def)]
             for how in SELECT:
-                i = select(trs, train, how)
+                i = select(trs, train, how, objective)
                 p = json.loads(trs[i].user_attrs["params"])
                 per_tr = json.loads(trs[i].user_attrs["per_take"])
                 if all(t in per_tr for t in test):
@@ -272,31 +298,37 @@ def run(takes=None, families=None, n_trials=150, protocol="strict", workers=4, s
                 sels.append((how, trs[i].number, p, per_te))
             for sel, num, p, per in sels:
                 m = metrics(_pool(per, test))
-                rrows.append(dict(family=fam, protocol=protocol, split=kind, fold=fold, selection=sel,
+                rrows.append(dict(family=fam, protocol=protocol, objective=objective, split=kind, fold=fold,
+                                  selection=sel,
                                   train=",".join(train), test=",".join(test), trial=num,
                                   params=json.dumps(p, default=str), **m))
         if protocol == "pooled":
-            trs = _trials(f"{fam}__pooled")
+            trs = _trials(f"{fam}__{objective}__pooled")
             for t in trs:
                 per = json.loads(t.user_attrs["per_take"])
                 m = metrics(_pool(per, fam_takes))
-                trows.append(dict(study=f"{fam}__pooled", family=fam, protocol=protocol, split="all", fold="all",
-                                  trial=t.number, miss_50=t.values[0], fp_per_frame_50=t.values[1],
-                                  gospa=m["gospa"], ms_per_frame=t.user_attrs.get("ms_per_frame"),
-                                  params=t.user_attrs.get("params")))
+                trows.append(dict(study=f"{fam}__{objective}__pooled", family=fam, protocol=protocol,
+                                  objective=objective, split="all", fold="all", trial=t.number,
+                                  **{k: m[k] for k in ("miss_50", "fp_per_frame_50", "arc_miss", "arc_early_rate",
+                                                       "gospa", "f1_50", "arc_pd")},
+                                  ms_per_frame=t.user_attrs.get("ms_per_frame"), params=t.user_attrs.get("params")))
             if trs:
-                best[fam] = json.loads(trs[select(trs, fam_takes)].user_attrs["params"])
+                best[fam] = json.loads(trs[select(trs, fam_takes, next(iter(SELECT)), objective)]
+                                       .user_attrs["params"])
     if protocol == "strict":                 # all-takes setting = the one a fresh all-takes study would pick:
         for fam in families:                 # approximated by the loto fold settings' median-performing one
-            sub = [r for r in rrows if r["family"] == fam and r["split"] == "loto" and r["selection"] == "tuned_f1"]
+            first = next(iter(SELECT))
+            key = SELECT[first][0]
+            sub = [r for r in rrows if r["family"] == fam and r["split"] == "loto" and r["selection"] == first]
             if sub:
-                best[fam] = json.loads(sorted(sub, key=lambda r: np.nan_to_num(r["f1_50"]))[len(sub) // 2]["params"])
+                best[fam] = json.loads(sorted(sub, key=lambda r: np.nan_to_num(r[key]))[len(sub) // 2]["params"])
     T = pd.DataFrame(trows)
     Rz = pd.DataFrame(rrows)
-    C.save_table(T, f"opt_trials_{protocol}")
-    C.save_table(Rz, f"opt_results_{protocol}")
-    C.save_json(best, f"opt_best_params_{protocol}")
+    C.save_table(T, f"opt_trials_{tag}")
+    C.save_table(Rz, f"opt_results_{tag}")
+    C.save_json(best, f"opt_best_params_{tag}")
     if len(Rz):
-        show = Rz.pivot_table(index=["family", "split"], columns="selection", values="f1_50", aggfunc="mean")
-        C.log("F1 at 0.5 m on the test folds (mean over folds):\n" + show.round(3).to_string())
+        show_key = "arc_pd" if objective == "arc" else "f1_50"
+        show = Rz.pivot_table(index=["family", "split"], columns="selection", values=show_key, aggfunc="mean")
+        C.log(f"{show_key} on the test folds (mean over folds):\n" + show.round(3).to_string())
     return T, Rz

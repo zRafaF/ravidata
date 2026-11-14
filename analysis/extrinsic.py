@@ -27,13 +27,16 @@ def target_rows(tags, takes=None, window_m=0.25):
                 continue
             t = C.radar_times(rec, C.default_max_frames())
             q = tags[(tags["take"] == take) & (tags.t_host >= t[0]) & (tags.t_host <= t[-1]) & (tags.reproj_px < 2)
-                     & (tags.view_deg < 70) & (tags.kind != "floor_tag")]
+                     & (tags.view_deg < 70) & tags.kind.isin(["chair", "broom"])]   # still objects only
             if not len(q):
                 continue
             F = R.features(rec, {"bg": "empty"}, C.default_max_frames())
+            F.r = F.r + R.range_bias()                    # the fit needs the uncorrected range axis
             P = F.P.mean(0)
             noise = np.median(F.noise)
             for i, g in q.groupby("id"):
+                if len(g) < 5 or g[["tx", "ty", "tz"]].std().max() > 0.03:       # moved during the recording
+                    continue
                 p = g[["tx", "ty", "tz"]].median().to_numpy()
                 r, az, el = G.polar(p)
                 w = np.flatnonzero(np.abs(F.r - r) <= window_m)
@@ -53,11 +56,14 @@ def target_rows(tags, takes=None, window_m=0.25):
     return pd.DataFrame(rows)
 
 
-def fit_range(T, prior_m=0.05):
+def fit_range(T, prior_m=0.05, free_offset=False):
+    """Range bias b (robust median) with the radar at the camera (t_rc = 0: the chip is 4 cm from the lens, a
+    <= 4 cm effect on range). free_offset=True also fits t_rc (badly conditioned with targets that are all ahead:
+    a first full run moved the radar 23 cm up to absorb range errors)."""
     from scipy.optimize import least_squares
     P = T[["x", "y", "z"]].to_numpy()
     rm = T.r_meas.to_numpy()
-    if len(T) < 5:
+    if len(T) < 5 or not free_offset:
         b = float(np.median(rm - np.linalg.norm(P, axis=1)))
         return np.zeros(3), b, rm - np.linalg.norm(P, axis=1) - b
 
@@ -102,6 +108,8 @@ def run(takes=None):
     C.save_json({"az": a, "el": e, "note": "angle = arcsin(wrap(sign*phase - offset) / (2 pi d/lambda))"},
                 "angle_calib")
     R.angle_calib.cache_clear()
+    R.range_bias.cache_clear()
+    R._FCACHE.clear()
     C.log(f"  t_rc = {np.round(t, 3)} m, range bias {b:+.3f} m, residual rms {ext['range_resid_rms_m']:.3f} m "
           f"({len(T)} targets)")
     C.log(f"  azimuth: sign {a['sign']:+.0f} offset {a['offset_rad']:+.2f} rad, R {a['R']:.2f}, "

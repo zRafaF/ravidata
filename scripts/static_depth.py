@@ -188,7 +188,11 @@ def main(argv=None):
     ap.add_argument("--per-part", type=int, default=5, help="frames per part (S0, S1, S2)")
     ap.add_argument("--model", default=DEFAULT_MODEL,
                     help=f"short name ({', '.join(MODELS)}) or any transformers depth-estimation model id")
-    ap.add_argument("--fit", choices=("scale", "affine"), default="scale")
+    ap.add_argument("--fit", choices=("scale", "affine", "auto"), default="auto",
+                    help="auto: per frame, the fit with the lower median error over every tag (the broom tags, not "
+                         "used for fitting, are a held-out check)")
+    ap.add_argument("--refit", action="store_true",
+                    help="no model: re-ground the depth maps already saved for --model (new fit, same depth)")
     ap.add_argument("--out-res", type=int, default=720)
     a = ap.parse_args(argv)
     if a.take == "all":                         # every static take (radar and camera still)
@@ -216,11 +220,41 @@ def main(argv=None):
     tp = F.tone_params(video)
     sizes = tag_sizes()
 
-    import torch
-    from PIL import Image
-    from transformers import pipeline
-    torch.set_num_threads(max(1, torch.get_num_threads()))
-    pipe = pipeline("depth-estimation", model=a.model, device="cpu")
+    pipe = None
+    if not a.refit:
+        import torch
+        from PIL import Image
+        from transformers import pipeline
+        torch.set_num_threads(max(1, torch.get_num_threads()))
+        pipe = pipeline("depth-estimation", model=a.model, device="cpu")
+
+    part_of = {}
+    for (pp, _), (tt_, _) in zip(picks, frames):
+        part_of[tt_] = pp
+
+    def picks_name(t):
+        return f"{part_of[t]}_{t:07.2f}s"
+
+    def saved_model_depth(t):
+        z = np.load(out / f"{picks_name(t)}.npz", allow_pickle=True)
+        if "depth_model" in z.files:
+            d = z["depth_model"].astype(np.float32)
+        else:                                            # older files: undo the saved fit
+            d = (z["depth"].astype(np.float32) - float(z["b"])) / float(z["a"])
+        return cv2.resize(d, (W, H), interpolation=cv2.INTER_LINEAR)
+
+    def best_fit(tags, dm):
+        if a.fit != "auto":
+            return fit(tags, dm, a.fit)
+        cands = []
+        for mode in ("scale", "affine"):
+            ab, rows_ = fit([dict(t) for t in tags], dm, mode)
+            errs = [r["rel_err"] for r in rows_ if r["rel_err"] is not None]
+            cands.append((np.median(errs) if errs else np.inf, mode, ab, rows_))
+        e, mode, ab, rows_ = min(cands, key=lambda c: c[0])
+        for r in rows_:
+            r["fit"] = mode
+        return ab, rows_
 
     rows, res = [], []
     s_out = a.out_res / W
@@ -230,10 +264,13 @@ def main(argv=None):
         und = cv2.remap(rgb, maps[0], maps[1], cv2.INTER_LINEAR)
         img = F.tone(und, tp)
         tags = detect_tags(cv2.cvtColor(img, cv2.COLOR_RGB2GRAY), K, sizes)
-        pred = pipe(Image.fromarray(img))["predicted_depth"]
-        dm = pred.squeeze().detach().cpu().numpy().astype(np.float32)
-        dm = cv2.resize(dm, (W, H), interpolation=cv2.INTER_LINEAR)
-        (sa, sb), tag_rows = fit(tags, dm, a.fit)
+        if pipe is None:
+            dm = saved_model_depth(t)
+        else:
+            pred = pipe(Image.fromarray(img))["predicted_depth"]
+            dm = pred.squeeze().detach().cpu().numpy().astype(np.float32)
+            dm = cv2.resize(dm, (W, H), interpolation=cv2.INTER_LINEAR)
+        (sa, sb), tag_rows = best_fit(tags, dm)
         res.append((part, t, img, dm, sa, sb, tag_rows, time.time() - t0))
         print(f"  {part} {t:7.2f} s: {len(tags)} tags {sorted(r['id'] for r in tag_rows)}, "
               f"scale {sa:.3f} ({time.time() - t0:.1f} s)", flush=True)
@@ -250,8 +287,10 @@ def main(argv=None):
         name = f"{part}_{t:07.2f}s"
         small = cv2.resize(metric, (a.out_res, a.out_res), interpolation=cv2.INTER_AREA)
         im_s = cv2.resize(img, (a.out_res, a.out_res), interpolation=cv2.INTER_AREA)
-        np.savez_compressed(out / f"{name}.npz", depth=small.astype(np.float16), K=Ko, t_video=t, part=part,
-                            model=a.model, fit=a.fit, a=sa, b=sb, grounded=how)
+        dm_s = cv2.resize(dm, (a.out_res, a.out_res), interpolation=cv2.INTER_AREA)
+        fit_used = tag_rows[0].get("fit", a.fit) if tag_rows else a.fit
+        np.savez_compressed(out / f"{name}.npz", depth=small.astype(np.float16), depth_model=dm_s.astype(np.float16),
+                            K=Ko, t_video=t, part=part, model=a.model, fit=fit_used, a=sa, b=sb, grounded=how)
         cv2.imwrite(str(out / f"{name}.jpg"), cv2.cvtColor(im_s, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])
         vv, uu = np.mgrid[0:a.out_res:2, 0:a.out_res:2]
         z = small[vv, uu]
@@ -261,7 +300,7 @@ def main(argv=None):
         errs = [r["rel_err_leave_one_out"] for r in tag_rows if r["rel_err_leave_one_out"] is not None]
         rows.append({"frame": name, "part": part, "t_video": round(t, 3), "tags": tag_rows, "a": sa, "b": sb,
                      "grounded": how, "seconds": round(secs, 1)})
-        print(f"  {name}: scale {sa:.3f}" + (f" offset {sb:+.3f}" if a.fit == "affine" else "") + f" [{how}]"
+        print(f"  {name}: scale {sa:.3f}" + (f" offset {sb:+.3f}" if sb else "") + f" ({fit_used}) [{how}]"
               + (f", leave-one-tag-out error median {np.median(errs) * 100:.1f} %" if errs else "")
               + ("; true/model per tag " + " ".join(f"{r['id']}{'' if r['used_in_fit'] else '*'}:{r['ratio']:.2f}"
                                                      for r in tag_rows) if tag_rows else ""), flush=True)

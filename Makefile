@@ -2,8 +2,8 @@
 # `make` and `git` are the only other things a machine needs (`apt-get install -y make` on a fresh pod).
 # Code: https://github.com/zRafaF/ravidata   Data: https://huggingface.co/datasets/DoninhaD/ravidata
 .PHONY: help install test rec rec-sim align pack calib targets data data-all dataset dataset-upload \
-        maps fuse static-depth static-depth-upload viz analysis analysis-quick plots an-tags an-extrinsic an-truth \
-        an-sensor an-eval an-opt an-eval-tuned an-cordic play pod pod-test pod-status pod-watch pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
+        maps fuse static-depth static-depth-refit static-depth-upload viz analysis analysis-quick plots an-tags an-extrinsic an-truth \
+        an-sensor an-eval an-opt an-eval-tuned an-cordic an-ablation story report play pod pod-test pod-status pod-watch pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
 
 HF_REPO ?= DoninhaD/ravidata
 TAKES   ?= indoor_course outdoor_course
@@ -54,20 +54,24 @@ help:
 	@echo "                        MODEL=pi3x TAKE=indoor_course for one"
 	@echo "  make static-depth TAKE=all   CPU depth model per frame of the static takes, scaled by the AprilTags"
 	@echo "                        DEPTH_MODEL=depthpro (default; da2l, da2s or a transformers id); PER_PART=5"
+	@echo "  make static-depth-refit TAKE=all   re-fit the saved depth maps on the tags (FIT=auto|scale|affine, no model)"
 	@echo "  make static-depth-upload   put derived/static-depth-v1 on the HF dataset (after hf auth login)"
 	@echo "  make viz              3D viewer of the maps in the browser: whole take, one window, two windows,"
 	@echo "                        compare models, measure (VIZ_ARGS=\"--model vggt --take outdoor_course\"): docs/maps.md"
 	@echo ""
-	@echo "  radar analyses (CPU; tables in data/ravidata/derived/analysis-v1, figures from them): docs/analysis.md"
+	@echo "  radar analyses (CPU; tables, figures, videos in results/analysis-v1, kept in git): docs/analysis.md"
 	@echo "  make analysis-quick   every step on a few seconds of each recording (~6 min), + plots, to"
-	@echo "                        derived/analysis-quick: run this first after any change"
-	@echo "  make analysis         every step but CORDIC, full data, in order (hours: see docs/analysis.md)"
-	@echo "  make an-tags an-extrinsic an-truth an-sensor an-eval an-opt an-eval-tuned an-cordic"
+	@echo "                        results/analysis-quick: run this first after any change"
+	@echo "  make analysis         every step but CORDIC, full data, in order (hours: see docs/analysis.md);"
+	@echo "                        FROM=truth starts there (the steps before it already done)"
+	@echo "  make an-tags an-extrinsic an-truth an-sensor an-eval an-ablation an-opt an-eval-tuned an-cordic"
 	@echo "                        one step (QUICK=1 for its quick version)"
 	@echo "  make plots            figures from the existing tables only (seconds); QUICK=1 for the quick tables"
+	@echo "  make story            explanatory figures (how the truth is built, radar range-time maps with the truth)"
+	@echo "  make report           results/analysis-v1/REPORT.md: every number as Markdown tables"
 	@echo "  make play REC=indoor_course/01_D1_tcc-1d-40mm START=20 SECONDS=15 PLAY_FAMILIES=\"ca_cfar grid\""
 	@echo "                        video of one recording: camera + instantaneous radar heatmap + detections + truth"
-	@echo "                        (PLAY_ARGS=\"--gif --bg empty --params tuned_pooled\"); derived/analysis-play/"
+	@echo "                        (PLAY_ARGS=\"--gif --bg empty --params tuned_pooled\"); results/analysis-v1/videos/"
 	@echo "  variables: AN_TAKES='static_pass1 ...' FAMILIES='thr grid ...' TRIALS=$(TRIALS) PROTOCOL=$(PROTOCOL)"
 	@echo "             (strict | pooled | both) WORKERS=$(WORKERS) TAG_STEP=$(TAG_STEP) MAP_MODEL=$(MAP_MODEL)"
 
@@ -125,8 +129,13 @@ fuse:                                  # pose graph + ICP + weighted TSDF on the
 
 PER_PART ?= 5
 DEPTH_MODEL ?= depthpro
+FIT ?= auto
 static-depth:                          # monocular metric depth of a static take on the CPU, grounded on the tags
 	uv run --group depth python scripts/static_depth.py --take $(TAKE) --per-part $(PER_PART) --model $(DEPTH_MODEL)
+
+static-depth-refit:                    # re-ground the saved depth maps on the tags (no model run; FIT=auto|scale|affine)
+	uv run --group depth python scripts/static_depth.py --take $(TAKE) --per-part $(PER_PART) --model $(DEPTH_MODEL) \
+	  --refit --fit $(FIT)
 
 static-depth-upload:                   # derived/static-depth-v1 -> the HF dataset (needs `uv run hf auth login`)
 	uv run hf upload $(HF_REPO) data/ravidata/derived/static-depth-v1 derived/static-depth-v1 --repo-type dataset \
@@ -141,12 +150,14 @@ AN_TAKES  ?=
 FAMILIES  ?=
 TRIALS    ?= 150
 PROTOCOL  ?= pooled
+OBJECTIVE ?= both
 WORKERS   ?= 4
 TAG_STEP  ?= 2
 MAP_MODEL ?= pi3x
 QUICK     ?=
+FROM      ?=
 AN_ARGS = $(if $(AN_TAKES),--takes $(AN_TAKES)) $(if $(FAMILIES),--families $(FAMILIES)) --trials $(TRIALS) \
-          --protocol $(PROTOCOL) --workers $(WORKERS) --tag-step $(TAG_STEP) --model $(MAP_MODEL) $(if $(QUICK),--quick)
+          --protocol $(PROTOCOL) --objective $(OBJECTIVE) --workers $(WORKERS) --tag-step $(TAG_STEP) --model $(MAP_MODEL) $(if $(QUICK),--quick) $(if $(FROM),--from $(FROM))
 AN = uv run --group analysis python -m analysis
 
 an-tags:
@@ -159,6 +170,12 @@ an-sensor:
 	$(AN) sensor $(AN_ARGS)
 an-eval:
 	$(AN) eval $(AN_ARGS)
+an-ablation:                           # one stage at a time over a threshold sweep (cached per recording)
+	$(AN) ablation $(AN_ARGS)
+story:                                 # explanatory figures: how the truth is built, range-time maps
+	$(AN) story $(AN_ARGS)
+report:                                # results/analysis-v1/REPORT.md: every number as tables
+	$(AN) report $(AN_ARGS)
 an-opt:
 	$(AN) opt $(AN_ARGS)
 an-eval-tuned:

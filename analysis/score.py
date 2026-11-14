@@ -59,7 +59,10 @@ def _assign(Dm):
     return linear_sum_assignment(Dm)
 
 
-def score_rec(d, obs_r, obs_az, floor_r, complete, cor_truth, covered):
+ARC_ALERT_M = 2.0            # arc view: an alert is 'an obstacle nearer than 2 m anywhere in the beam'
+
+
+def score_rec(d, obs_r, obs_az, floor_r, complete, cor_truth, covered, arc_truth=None, arc_covered=None):
     """d: detections of one recording; obs_r/obs_az/floor_r: (n, N_SECT) truth; covered: (n,) bool.
     Returns (frame table dict, detection table dict)."""
     n = obs_r.shape[0]
@@ -133,6 +136,7 @@ def score_rec(d, obs_r, obs_az, floor_r, complete, cor_truth, covered):
         fr[f"rtp{int(c * 100)}"] = np.zeros(n)
     fr["n_truth_r"], fr["n_det_r"] = np.zeros(n), np.zeros(n)
     fr["near_truth"], fr["near_det"] = np.nanmin(np.where(np.isfinite(obs_r), obs_r, np.inf), 1), np.full(n, np.inf)
+    fr["arc_det"] = np.full(n, np.inf)
     fr["near_truth"][~np.isfinite(fr["near_truth"])] = np.nan
     s0 = np.searchsorted(d["f"], np.arange(n + 1))
     for i in range(n):
@@ -140,16 +144,24 @@ def score_rec(d, obs_r, obs_az, floor_r, complete, cor_truth, covered):
         dr = merge_ranges(d["r"][s0[i]:s0[i + 1]])
         fr["n_truth_r"][i], fr["n_det_r"][i] = len(tr), len(dr)
         if len(dr):
-            fr["near_det"][i] = dr[0]
+            fr["arc_det"][i] = dr[0]                     # nearest at any angle (the arc view)
         if len(tr) and len(dr):
             Dm = np.abs(tr[:, None] - dr[None])
             ri, ci = _assign(np.minimum(Dm, 2.0))
             dd = Dm[ri, ci]
             for c in RINGS:
                 fr[f"rtp{int(c * 100)}"][i] = (dd <= c).sum()
+    # nearest inside the camera view (by the detection's own azimuth / elevation), compared with the camera truth
+    az_ = np.where(np.isfinite(d["az"]), d["az"], 0.0)
+    el_ = d["el"] if "el" in d else np.full(len(d["r"]), np.nan)
+    infov = (np.abs(az_) <= G.HFOV_HALF_DEG) & (~np.isfinite(el_) | (np.abs(el_) <= G.HFOV_HALF_DEG))
+    np.minimum.at(fr["near_det"], d["f"][infov], d["r"][infov])
     fr["near_det"][~np.isfinite(fr["near_det"])] = np.nan
+    fr["arc_det"][~np.isfinite(fr["arc_det"])] = np.nan
     cor_det = corridor_nearest(d, n)
-    fr.update(complete=complete.astype(bool), n_det_fov_raw=n_in, n_det_out=n_out, cor_truth=cor_truth, cor_det=cor_det, covered=covered)
+    if arc_truth is None:
+        arc_truth, arc_covered = np.full(n, np.nan), np.zeros(n, bool)
+    fr.update(arc_truth=arc_truth, arc_covered=arc_covered, complete=complete.astype(bool), n_det_fov_raw=n_in, n_det_out=n_out, cor_truth=cor_truth, cor_det=cor_det, covered=covered)
     dt = dict(f=f, sector=s, r=r, az=red["az_used"], score=red["score"], dist=det_dist, cause=cause,
               **{f"m{int(c * 100)}": det_match[:, j] for j, c in enumerate(RINGS)})
     return fr, dt
@@ -187,6 +199,20 @@ def summary(frames, dets=None, fps=None) -> dict:
     out["cor_err_m"] = float(np.median(np.abs(cd - ct)[both])) if both.any() else np.nan
     out["cor_false_alarm_rate"] = float((np.isfinite(cd) & ~np.isfinite(ct)).sum() / max(1, (~np.isfinite(ct)).sum()))
     out["cor_early_rate"] = float((both & (cd < ct - 0.25)).sum() / max(1, len(F)))
+    # arc view (distance to the nearest obstacle in the beam, direction ignored): nearest detection of any angle
+    if "arc_truth" in F and F.arc_covered.any():
+        Fa = F[F.arc_covered.astype(bool)]                 # frames whose truth covers the whole beam
+        at, nd2 = Fa.arc_truth.to_numpy(), Fa.arc_det.to_numpy()
+        ok = np.isfinite(at)
+        b3 = ok & np.isfinite(nd2)
+        out["arc_frames"] = int(ok.sum())
+        out["arc_pd"] = float((b3 & (np.abs(nd2 - at) <= 0.25)).sum() / max(1, ok.sum()))
+        out["arc_early_rate"] = float((np.isfinite(nd2) & (~ok | (nd2 < at - 0.25))).sum() / max(1, len(Fa)))
+        out["arc_late_rate"] = float((ok & (~np.isfinite(nd2) | (nd2 > at + 0.25))).sum() / max(1, ok.sum()))
+        out["arc_err_m"] = float(np.median(np.abs(nd2 - at)[b3])) if b3.any() else np.nan
+        ta, da = ok & (at < ARC_ALERT_M), np.isfinite(nd2) & (nd2 < ARC_ALERT_M)
+        out["arc_alert_recall"] = float((ta & da).sum() / max(1, ta.sum()))
+        out["arc_alert_false_rate"] = float((da & ~ta).sum() / max(1, (~ta).sum()))
     ntr, ndr = F.n_truth_r.sum(), F.n_det_r.sum()
     for c in RINGS:
         tp = F[f"rtp{int(c * 100)}"].sum()

@@ -8,7 +8,7 @@ projected into it; (right, top) bird's-eye view of the radar's range-azimuth pla
 this frame (2-element Bartlett beam over the azimuth pair, dB over the frame's noise; no accumulation), the truth
 (nearest obstacle per 4 deg sector, white), the camera FOV and the walking corridor, and the detections of each
 family; (right, bottom) the range profile with the CFAR threshold of the first CFAR family, the detections and the
-truth ranges. Output: derived/analysis-play/<recording>_<start>s_<families>.mp4 (and .gif with --gif)."""
+truth ranges. Output: results/analysis-v1/videos/<recording>_<start>s_<families>.mp4 (and .gif with --gif)."""
 
 from __future__ import annotations
 
@@ -44,8 +44,10 @@ def truth_for(rec: C.Recording):
             s = S[S.rec == rec.key].sort_values(["f", "sector"])
             n = s.f.max() + 1
             piv = lambda c: s[c].to_numpy().reshape(n, G.N_SECT)
+            Fr = C.load_table("truth_frames").query("rec == @rec.key").sort_values("f")
+            arc = Fr.arc_r.to_numpy() if "arc_r" in Fr else np.full(n, np.nan)
             C.set_quick(False)
-            return piv("obs_r"), piv("obs_az"), piv("obs_el"), piv("floor_r"), ("quick" if quick else "full")
+            return piv("obs_r"), piv("obs_az"), piv("obs_el"), piv("floor_r"), ("quick" if quick else "full"), arc
     C.set_quick(False)
     return None
 
@@ -79,7 +81,7 @@ def main(argv=None):
     ap.add_argument("--start", type=float, default=0.0, help="seconds after the recording's first scene frame")
     ap.add_argument("--seconds", type=float, default=10.0)
     ap.add_argument("--families", nargs="*", default=["ca_cfar", "grid"])
-    ap.add_argument("--params", default="default", help="default | tuned_pooled | tuned_strict")
+    ap.add_argument("--params", default="default", help="default | tuned_pooled_plane | tuned_pooled_arc | ...")
     ap.add_argument("--bg", default="none", help="heatmap background removal: none | ema | empty")
     ap.add_argument("--speed", type=float, default=1.0, help="playback speed (1 = real time)")
     ap.add_argument("--gif", action="store_true", help="also write a GIF (half size, 10 fps)")
@@ -98,7 +100,7 @@ def main(argv=None):
     if a.params != "default":
         for q in (False, True):
             C.set_quick(q)
-            best = C.load_json(f"opt_best_params_{a.params.replace('tuned_', '')}", {}) or best
+            best = C.load_json(f"opt_best_params_{a.params.replace('tuned_', '')}", {}) or best   # e.g. tuned_pooled_arc
             if best:
                 break
     C.set_quick(False)
@@ -153,7 +155,7 @@ def main(argv=None):
     # ---- static parts of the figure
     K, Dd, W = C.camera_K()
     thetas = np.linspace(-75, 75, 151)
-    rr = rd.range_m
+    rr = rd.range_m - R.range_bias()
     TH, RR = np.meshgrid(np.radians(thetas), rr)
     Xg, Zg = RR * np.sin(TH), RR * np.cos(TH)
     plt.rcParams.update({"font.size": 9, "figure.facecolor": "#fcfcfb", "axes.facecolor": "#fcfcfb"})
@@ -179,11 +181,15 @@ def main(argv=None):
     ax_bev.set_xlabel("X (m), right +"); ax_bev.set_ylabel("Z (m), ahead")
     tr_bev, = ax_bev.plot([], [], "o", mfc="none", mec="#ffffff", ms=9, mew=1.5, label="truth (nearest per sector)")
     tr_img, = ax_img.plot([], [], "o", mfc="none", mec="#ffffff", ms=10, mew=1.5)
+    arc_t = np.radians(np.linspace(-60, 60, 61))
+    arc_tr, = ax_bev.plot([], [], color="#ffffff", lw=1.5, ls="--", label="arc truth (nearest, +-60 deg)")
+    arc_det = {}
     det_bev, det_img, det_rp = {}, {}, {}
     for k, fam in enumerate(dets):
         det_bev[fam], = ax_bev.plot([], [], MARK[k], color=FAM_COL[k], ms=6, mec="#0b0b0b", mew=0.5, label=fam)
         det_img[fam], = ax_img.plot([], [], MARK[k], color=FAM_COL[k], ms=8, mec="#0b0b0b", mew=0.5)
         det_rp[fam] = ax_rp.vlines([], 0, 1, color=FAM_COL[k], lw=1.5, transform=ax_rp.get_xaxis_transform())
+        arc_det[fam], = ax_bev.plot([], [], color=FAM_COL[k], lw=1.0, alpha=0.8)
     ax_bev.legend(loc="upper right", fontsize=7, framealpha=0.7)
     rp_line, = ax_rp.plot(rr, np.zeros_like(rr), color="#0b0b0b", lw=1.2, label="power")
     rp_thr, = ax_rp.plot(rr, np.full_like(rr, np.nan), color="#eb6834", lw=1, ls="--",
@@ -212,8 +218,7 @@ def main(argv=None):
                 break
         return cur[1] if cur else None
 
-    out_dir = C.DATA / "derived" / "analysis-play"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = C.out_dir("videos")
     name = f"{rec.take}_{rec.file.stem}_{a.start:.0f}s_{'-'.join(dets)}"
     fps = (len(rd.t) - 1) / (rd.t[-1] - rd.t[0]) * a.speed
     oc = av.open(str(out_dir / f"{name}.mp4"), "w")
@@ -241,6 +246,8 @@ def main(argv=None):
             uv = project(K, Dd, trc, o_r[m], o_az[m], o_el[m]) * 720 / W
             tr_img.set_data(uv[:, 0], uv[:, 1])
             rp_tr.set_segments([[[r_, 0], [r_, 1]] for r_ in np.unique(np.round(o_r[m], 2))])
+            ar = tr[5][i] if i < len(tr[5]) else np.nan
+            arc_tr.set_data(*((ar * np.sin(arc_t), ar * np.cos(arc_t)) if np.isfinite(ar) else ([], [])))
         else:
             tr_bev.set_data([], []); tr_img.set_data([], [])
         # detections
@@ -253,6 +260,8 @@ def main(argv=None):
             uv = project(K, Dd, trc, r_, az_, el_) * 720 / W
             det_img[fam].set_data(uv[:, 0], uv[:, 1])
             det_rp[fam].set_segments([[[v, 0], [v, 0.12]] for v in r_])
+            nr = r_.min() if len(r_) else np.nan
+            arc_det[fam].set_data(*((nr * np.sin(arc_t), nr * np.cos(arc_t)) if np.isfinite(nr) else ([], [])))
             txt.append(f"{fam}: {s1 - s0}")
         img = video_at(float(sync.host_to_video(rd.t[i])))
         if img is not None:
@@ -274,10 +283,10 @@ def main(argv=None):
         oc.mux(pkt)
     oc.close()
     cont.close()
-    C.log(f"-> {(out_dir / f'{name}.mp4').relative_to(C.DATA)}")
+    C.log(f"-> {C.rel(out_dir / f'{name}.mp4')}")
     if gif:
         gif[0].save(out_dir / f"{name}.gif", save_all=True, append_images=gif[1:], duration=100, loop=0)
-        C.log(f"-> {(out_dir / f'{name}.gif').relative_to(C.DATA)}")
+        C.log(f"-> {C.rel(out_dir / f'{name}.gif')}")
 
 
 if __name__ == "__main__":

@@ -22,6 +22,10 @@ from . import geometry as G
 from . import imu
 
 H_OBS_MIN, H_OBS_MAX, H_FLOOR_TOL = 0.12, 2.0, 0.06
+ARC_HALF_DEG = 60.0          # 'arc' truth: nearest obstacle anywhere in the radar's beam (+-60 deg), any direction
+ARC_WINDOW_S = 4.0           # keyframes of the same map window within +-4 s build the arc truth's local map
+ARC_EL_HALF_DEG = 30.0       # ... within +-30 deg of elevation (the antenna's vertical beam; tables passed at hip
+                             # height 60-80 deg below the radar are not in it)
 CORRIDOR = dict(half=0.5, z0=0.3, z1=3.0)
 
 
@@ -117,7 +121,7 @@ def _tag_points(tags, take, t0, t1, kinds_excl=("floor_tag",)):
     if tags is None or len(tags) == 0:
         return None
     q = tags[(tags["take"] == take) & (tags.t_host >= t0) & (tags.t_host <= t1) & (tags.reproj_px < 2.0)
-             & (tags.view_deg < 70)]
+             & (tags.view_deg < 70) & tags.id.isin(list(C.TAG_KIND))]
     return q[~q.kind.isin(kinds_excl)], q[q.kind.isin(kinds_excl)]
 
 
@@ -177,10 +181,16 @@ def run_static(take, tags, rows_s, rows_f, trc):
         sel = _tag_points(tags, take, t[0], t[-1])
         pts, src = [], "tags"
         hf = np.nan
+        moving = None
         if sel is not None:
             ob, fl = sel
-            for _, g in ob.groupby("id"):
+            mov_ids = []
+            for i_, g in ob.groupby("id"):
+                if C.TAG_KIND.get(int(i_)) == "person" or g[["tx", "ty", "tz"]].std().max() > 0.05:
+                    mov_ids.append(i_)                        # people / moved objects: per frame, below
+                    continue
                 pts.append(np.median(g[["tx", "ty", "tz"]].to_numpy(), 0))
+            moving = ob[ob.id.isin(mov_ids)] if mov_ids else None
             if len(fl):
                 hf = float(np.median(fl[["tx", "ty", "tz"]].to_numpy() @ up))
         P_obs = np.array(pts).reshape(-1, 3)
@@ -197,17 +207,104 @@ def run_static(take, tags, rows_s, rows_f, trc):
         o_r, o_az, o_el, f_r, cnt, cor_r = summarise(G.to_radar(P, trc), obs, flo)
         if sd is None:
             cnt = np.full(G.N_SECT, -1)                      # coverage unknown with tags only
+        P_r = G.to_radar(P, trc)
         for f, tt in enumerate(t):
+            if moving is not None:                            # a person / moving tag seen within 0.1 s
+                q = moving[np.abs(moving.t_host - tt) < 0.1]
+                if len(q):
+                    extra = G.to_radar(q.groupby("id")[["tx", "ty", "tz"]].median().to_numpy(), trc)
+                    r_ = summarise(P_r, obs, flo, extra)
+                    _emit(rows_s, rows_f, rec, f, tt, r_[0], r_[1], r_[2], r_[3], cnt, r_[5], src, 0.0, hf,
+                          sd is not None)
+                    continue
             _emit(rows_s, rows_f, rec, f, tt, o_r, o_az, o_el, f_r, cnt, cor_r, src, 0.0, hf, sd is not None)
 
 
-def _emit(rows_s, rows_f, rec, f, t, o_r, o_az, o_el, f_r, cnt, cor_r, src, dt, hf, complete):
+def _emit(rows_s, rows_f, rec, f, t, o_r, o_az, o_el, f_r, cnt, cor_r, src, dt, hf, complete, arc=None):
+    """arc = (nearest obstacle in the radar beam, the same in the camera FOV, nearest floor in the beam) when a
+    wider-than-the-camera truth exists (fused map); else the camera-FOV truth is used and arc_complete = False."""
+    if arc is None or not np.isfinite(arc[0]) and not np.isfinite(arc[1]):
+        near = np.nanmin(o_r) if np.isfinite(o_r).any() else np.nan
+        arc, arc_complete = (near, near, np.nanmin(f_r) if np.isfinite(f_r).any() else np.nan), False
+    else:
+        arc_complete = True
     sc = G.sector_centres()
     for s in range(G.N_SECT):
         rows_s.append((rec.key, f, s, sc[s], o_r[s], o_az[s], o_el[s], f_r[s], int(cnt[s])))
     rows_f.append(dict(rec=rec.key, take=rec.take, config=rec.config, part=rec.part, f=f, t=t, source=src,
                        dt_kf=dt, covered=bool(np.isfinite(dt)), complete=complete,
-                       n_obj=int(np.isfinite(o_r).sum()), corridor_r=cor_r, floor_h=hf))
+                       n_obj=int(np.isfinite(o_r).sum()), corridor_r=cor_r, floor_h=hf, arc_r=arc[0],
+                       arc_r_fov=arc[1], arc_floor_r=arc[2], arc_complete=arc_complete))
+
+
+def label_fused(P, Tkf, up_kf, tile=1.0):
+    """Obstacle / floor labels of the fused map points, once, in the world frame: 'up' = mean gravity of the
+    keyframes rotated to the world; floor level per 1 m tile = densest level among the tile's low points (handles
+    sloped ground outdoors). Returns heights above the floor."""
+    u = np.einsum("nij,nj->i", Tkf[:, :3, :3], up_kf)
+    u /= np.linalg.norm(u)
+    h = P @ u
+    a = np.cross(u, [1.0, 0, 0]) if abs(u[0]) < 0.9 else np.cross(u, [0, 1.0, 0])
+    a /= np.linalg.norm(a)
+    b = np.cross(u, a)
+    ti = np.floor(np.stack([P @ a, P @ b], 1) / tile).astype(np.int64)
+    key = ti[:, 0] * 100000 + ti[:, 1]
+    hf_glob = G.floor_height(h - np.median(h), lo=-3.0, hi=1.0) + np.median(h)
+    hh = np.empty(len(P))
+    for k in np.unique(key):
+        m = key == k
+        hk = h[m]
+        low = hk[hk <= np.percentile(hk, 40)]
+        f = np.nan
+        if len(low) > 30:
+            hist, ed = np.histogram(low, bins=np.arange(low.min(), low.max() + 0.08, 0.04))
+            if len(hist):
+                f = ed[int(np.argmax(hist))] + 0.02
+        if not np.isfinite(f) or abs(f - hf_glob) > 0.5:
+            f = hf_glob
+        hh[m] = h[m] - f
+    return hh
+
+
+def arc_truth(Q_rad, hh, obs_lo=H_OBS_MIN, obs_hi=H_OBS_MAX):
+    """Nearest obstacle in the radar beam (+-ARC_HALF_DEG), in the camera FOV, and nearest floor point."""
+    r, az, el = G.polar(Q_rad)
+    obs = (hh > obs_lo) & (hh < obs_hi) & (r >= G.R_MIN)
+    flo = np.abs(hh) < H_FLOOR_TOL
+    beam = (np.abs(az) <= ARC_HALF_DEG) & (np.abs(el) <= ARC_EL_HALF_DEG)
+    fov = (np.abs(az) <= G.HFOV_HALF_DEG) & (np.abs(el) <= G.HFOV_HALF_DEG)
+    pick = lambda m: float(r[m].min()) if m.any() else np.nan
+    return pick(obs & beam), pick(obs & fov), pick(flo & beam & (r >= G.R_MIN))
+
+
+def window_cloud(tm, take, k, cache=None, stride=8):
+    """All keyframes of map window k as one point cloud in the window's frame (window units), with heights above
+    the window's floor plane (metres). A window is self-consistent (~1 % in Pi3X), unlike the fused map, whose
+    joins can leave ghost surfaces. Returns (P, keyframe time per point, height, metric scale, keyframe times,
+    keyframe c2w)."""
+    if cache is not None and k in cache:
+        return cache[k]
+    w = tm.window(k)
+    pts, tk = [], []
+    for j, i in enumerate(w["idx"]):
+        X, _ = tm.points(int(i), stride=stride)
+        Tw = w["c2w"][j]
+        pts.append(X @ Tw[:3, :3].T + Tw[:3, 3]); tk.append(np.full(len(X), tm.t[int(i)]))
+    P = np.concatenate(pts); tk = np.concatenate(tk)
+    up = _gravity_up(take, tm.t[w["idx"]])
+    u = np.einsum("nij,nj->i", w["c2w"][:, :3, :3], up) if up is not None else -w["c2w"][0, :3, 1]
+    u /= np.linalg.norm(u)
+    h = P @ u
+    s_w = tm.metric(k)
+    pl = floor_plane(P * s_w, u, h * s_w, G.floor_height(h * s_w - np.median(h * s_w), lo=-3, hi=1)
+                     + np.median(h * s_w))
+    hh = (P * s_w) @ pl[0] + pl[1] if pl is not None else h * s_w - np.percentile(h * s_w, 5)
+    out = (P, tk, hh, s_w, tm.t[w["idx"]], w["c2w"])
+    if cache is not None:
+        if len(cache) > 2:
+            cache.pop(next(iter(cache)))
+        cache[k] = out
+    return out
 
 
 def run_carried(take, tags, rows_s, rows_f, rows_scale, trc, model="pi3x", max_dt=0.25):
@@ -233,6 +330,11 @@ def run_carried(take, tags, rows_s, rows_f, rows_scale, trc, model="pi3x", max_d
         return cache[i]
 
     hf_hist = []
+    clouds = {}
+
+    def window_cloud_(k):
+        return window_cloud(tm, take, k, clouds)
+
     for rec in C.recordings(take):
         t = C.radar_times(rec, C.default_max_frames())
         Tt = interp_poses(tr[0], tr[1], t) if tr is not None else None
@@ -262,7 +364,18 @@ def run_carried(take, tags, rows_s, rows_f, rows_scale, trc, model="pi3x", max_d
                 if len(q):
                     extra = G.to_radar(q.groupby("id")[["tx", "ty", "tz"]].median().to_numpy(), trc)
             o_r, o_az, o_el, f_r, cnt, cor_r = summarise(G.to_radar(X, trc), obs, flo, extra)
-            _emit(rows_s, rows_f, rec, f, tt, o_r, o_az, o_el, f_r, cnt, cor_r, f"map:{model}", dt, hf, True)
+            arc = (np.nan, np.nan, np.nan)
+            k_own = tm.owner[i][0]
+            P, tk, hh_w, s_w, t_w, c2w_w = window_cloud_(k_own)
+            if t_w.min() - 0.05 <= tt <= t_w.max() + 0.05:            # radar time inside the window
+                Tw = interp_poses(t_w, c2w_w, np.array([tt]))[0]
+                sel = np.abs(tk - tt) <= ARC_WINDOW_S                 # keyframes within +-ARC_WINDOW_S
+                Q = (P[sel] - Tw[:3, 3]) @ Tw[:3, :3] * s_w
+                arc = arc_truth(G.to_radar(Q, trc), hh_w[sel])
+                if extra is not None and len(extra):                  # tagged people / objects seen now
+                    re_ = G.polar(extra)[0]
+                    arc = (np.nanmin([arc[0], re_.min()]), np.nanmin([arc[1], re_.min()]), arc[2])
+            _emit(rows_s, rows_f, rec, f, tt, o_r, o_az, o_el, f_r, cnt, cor_r, f"map:{model}", dt, hf, True, arc)
 
 
 def run(takes=None, model="pi3x", max_dt=0.25):

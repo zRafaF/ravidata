@@ -18,7 +18,12 @@ from .radar import features_cached as features
 
 PRE_KEYS = ("bg", "bg_alpha", "doppler", "zero_band", "combine")
 COMMON = dict(bg="none", bg_alpha=0.98, doppler="sum", zero_band=0, combine="mean", r_min=0.30, r_max=4.10,
-              m=1, n=1, spread=1)
+              m=1, n=1, spread=1, hgate=False, radar_h=1.1, h_min=0.15, h_max=2.0, el_off=0.0,
+              integ=0.0, track=False, track_gate=0.3, track_confirm=3, track_hold=5, track_alpha=0.5, track_beta=0.1)
+# integ: causal non-coherent integration of the power over frames before detection, P_k = a P_k-1 + (1-a) P_k.
+# track: nearest-obstacle tracker after everything (alpha-beta on the nearest detection, confirm / hold).
+# hgate: radar + IMU fusion -- the phone's gravity levels each detection's elevation; returns that land on the floor
+# (or overhead) are dropped before any clustering / grid. radar_h = assumed radar height above the floor.
 
 DEFAULTS = {
     "thr_nearest": dict(COMMON, k_db=12.0),
@@ -28,10 +33,15 @@ DEFAULTS = {
     "rd_cfar": dict(COMMON, guard_d=1, guard_r=1, train_d=2, train_r=4, k_db=12.0),
     "cfar_dbscan": dict(COMMON, kind="ca", guard=2, train=8, k_db=10.0, window=5, eps=0.25, min_samples=3),
     "grid": dict(COMMON, front="ca", guard=2, train=8, k_db=8.0, pose="none", speed=1.0, **{
-        "g_" + k: v for k, v in {"l_occ": 0.85, "l_free": 0.4, "decay": 0.9, "sigma_r": 0.06, "sigma_az": 8.0,
+        "g_" + k: v for k, v in {"l_occ": 0.85, "l_free": 0.4, "decay": 0.9, "sigma_r": 0.06, "sigma_az": 4.0,
                                  "blur": 0.0, "morph": "none", "morph_k": 3, "thr_hi": 1.5, "thr_lo": 0.8,
-                                 "min_cells": 3, "free": True}.items()}),
+                                 "min_cells": 3, "free": True, "extract": "component"}.items()}),
+    "grid_legacy": dict(COMMON, combine="rx1", pose="none", speed=1.0, **{
+        "L_" + k: v for k, v in {"az_bin_deg": 2.0, "gain": 1.0, "decay_rate_per_sec": 0.05, "thr_db": 15.0,
+                                 "eps": 0.15, "min_pts": 2, "diffusion": False, "edge_frac": 0.125,
+                                 "snr_min_db": 0.0}.items()}),
 }
+DEFAULTS["grid_legacy_imu"] = dict(DEFAULTS["grid_legacy"], pose="imu")
 DEFAULTS["grid_imu"] = dict(DEFAULTS["grid"], pose="imu_speed")
 DEFAULTS["grid_oracle"] = dict(DEFAULTS["grid"], pose="oracle")
 DEFAULTS["app_threshold"] = {}
@@ -47,11 +57,22 @@ def _space_common(t, two_d, carried):
     if two_d:
         p["doppler"] = t.suggest_categorical("doppler", ["sum", "zero", "nonzero", "max"])
         p["zero_band"] = t.suggest_int("zero_band", 0, 2)
-    p["combine"] = t.suggest_categorical("combine", ["mean", "coh", "max"])
+    p["combine"] = t.suggest_categorical("combine", ["mean", "coh", "max", "rx1"])
     p["r_min"] = t.suggest_float("r_min", 0.26, 0.8)
     p["n"] = t.suggest_int("n", 1, 6)
     p["m"] = t.suggest_int("m", 1, p["n"])
     p["spread"] = t.suggest_int("spread", 0, 2)
+    p["integ"] = t.suggest_float("integ", 0.0, 0.95)
+    p["track"] = t.suggest_categorical("track", [False, True])
+    if p["track"]:
+        p["track_gate"] = t.suggest_float("track_gate", 0.1, 0.6)
+        p["track_confirm"] = t.suggest_int("track_confirm", 1, 8)
+        p["track_hold"] = t.suggest_int("track_hold", 0, 15)
+    p["hgate"] = t.suggest_categorical("hgate", [False, True])
+    if p["hgate"]:
+        p["radar_h"] = t.suggest_float("radar_h", 0.6, 1.6)
+        p["h_min"] = t.suggest_float("h_min", 0.0, 0.5)
+        p["el_off"] = t.suggest_float("el_off", -20.0, 20.0)
     return p
 
 
@@ -79,6 +100,17 @@ def space(t, family: str, two_d: bool, carried: bool) -> dict:
         p["window"] = t.suggest_int("window", 1, 12)
         p["eps"] = t.suggest_float("eps", 0.08, 0.6)
         p["min_samples"] = t.suggest_int("min_samples", 1, 8)
+    if family.startswith("grid_legacy"):
+        p["L_az_bin_deg"] = t.suggest_categorical("L_az_bin_deg", [1.0, 2.0, 4.0])
+        p["L_gain"] = 1.0                                       # redundant with the threshold
+        p["L_decay_rate_per_sec"] = t.suggest_float("L_decay_rate_per_sec", 1e-4, 0.8, log=True)
+        p["L_thr_db"] = t.suggest_float("L_thr_db", 5.0, 45.0)
+        p["L_eps"] = t.suggest_float("L_eps", 0.05, 0.5)
+        p["L_min_pts"] = t.suggest_int("L_min_pts", 1, 8)
+        p["L_diffusion"] = t.suggest_categorical("L_diffusion", [True, False])
+        p["L_edge_frac"] = t.suggest_float("L_edge_frac", 0.02, 0.8, log=True)
+        p["L_snr_min_db"] = t.suggest_float("L_snr_min_db", 0.0, 20.0)
+        return p
     if family.startswith("grid"):
         p["front"] = t.suggest_categorical("front", ["ca", "os", "thr"])
         p["guard"] = t.suggest_int("guard", 0, 4)
@@ -96,6 +128,7 @@ def space(t, family: str, two_d: bool, carried: bool) -> dict:
         p["g_thr_lo"] = t.suggest_float("g_thr_lo", 0.1, 2.5)
         p["g_thr_hi"] = t.suggest_float("g_thr_hi", p["g_thr_lo"], 3.5)
         p["g_min_cells"] = t.suggest_int("g_min_cells", 1, 20)
+        p["g_extract"] = t.suggest_categorical("g_extract", ["component", "sector"])
         if family != "grid":
             p["speed"] = t.suggest_float("speed", 0.0, 1.6) if family == "grid_imu" else 1.0
     return p
@@ -115,6 +148,13 @@ def detect(rec: C.Recording, family: str, p: dict, max_frames=None, F=None, trig
         return app_detect(rec, family, max_frames)
     F = F or features(rec, {k: p[k] for k in PRE_KEYS if k in p}, max_frames)
     t0 = time.perf_counter()
+    if p.get("integ", 0) > 0:                                  # non-coherent integration over frames
+        import dataclasses
+        from scipy.signal import lfilter
+        a_ = float(p["integ"])
+        Pi = lfilter([1 - a_], [1, -a_], F.P, axis=0, zi=(a_ * F.P[:1]))[0]
+        use = (F.r >= G.R_MIN) & (F.r <= G.R_MAX)
+        F = dataclasses.replace(F, P=Pi, noise=np.median(Pi[:, use], 1))
     if family in ("thr", "thr_nearest"):
         mask = D.threshold_mask(F, p["k_db"])
     elif family in ("ca_cfar", "cfar_dbscan"):
@@ -125,18 +165,79 @@ def detect(rec: C.Recording, family: str, p: dict, max_frames=None, F=None, trig
         mask = D.rd_mask(F, (p["guard_d"], p["guard_r"]), (p["train_d"], p["train_r"]), p["k_db"])
         if mask is None:
             return None, np.nan, F
+    elif family.startswith("grid_legacy"):                     # no detector in front: every bin goes in
+        from .grid_legacy import run_legacy
+        d = run_legacy(F, p, trig, poses)
+        return d, (time.perf_counter() - t0) * 1000 / max(F.n, 1), F
     else:                                                       # grid families
         mask = _front_mask(F, p, p["front"])
     mask = D.mofn(mask, int(p["m"]), int(p["n"]), int(p["spread"]))
-    d = D.peaks(F, mask, p["r_min"], p["r_max"], nearest_only=(family == "thr_nearest"))
+    d = D.peaks(F, mask, p["r_min"], p["r_max"], nearest_only=(family == "thr_nearest") and not p["hgate"])
+    if p["hgate"]:
+        d = D.height_gate(F, d, p["radar_h"], p["h_min"], p["h_max"], p.get("el_off", 0.0))
+        if family == "thr_nearest" and len(d["f"]):
+            first = np.r_[True, d["f"][1:] != d["f"][:-1]]
+            o = np.lexsort((d["r"], d["f"]))
+            d = {k: v[o] for k, v in d.items()}
+            first = np.r_[True, d["f"][1:] != d["f"][:-1]]
+            d = {k: v[first] for k, v in d.items()}
     d["score"] = d["snr_db"]
     if family == "cfar_dbscan":
         d = __import__("analysis.cluster", fromlist=["x"]).temporal_dbscan(d, F.n, int(p["window"]), p["eps"],
                                                                            int(p["min_samples"]))
     if family.startswith("grid"):
         d = run_grid(F, d, p, trig, poses)
+    if p.get("track"):
+        d = track_nearest(d, F.t, p)
     ms = (time.perf_counter() - t0) * 1000 / max(F.n, 1)
     return d, ms, F
+
+
+def track_nearest(d, t, p):
+    """Temporal filter on the arc output: alpha-beta tracker of the nearest detection (range only).
+    A new (nearer) return must be seen in `track_confirm` consecutive frames within `track_gate` to replace the
+    track; a track with no support is held `track_hold` frames, then dropped. One output per frame (the track)."""
+    n = len(t)
+    starts = np.searchsorted(d["f"], np.arange(n + 1))
+    g, conf, hold = p["track_gate"], int(p["track_confirm"]), int(p["track_hold"])
+    al, be = p["track_alpha"], p["track_beta"]
+    r = v = None
+    miss = 0
+    cand, cand_n = None, 0
+    out = {k: [] for k in ("f", "r", "az", "el", "score", "snr_db")}
+    for i in range(n):
+        a, b = starts[i], starts[i + 1]
+        dt = float(t[i] - t[i - 1]) if i else 0.0
+        z = None
+        if b > a:
+            j = a + int(np.argmin(d["r"][a:b]))
+            z = (d["r"][j], d["az"][j], d["el"][j], d["score"][j])
+        if r is not None:
+            rp = r + v * dt
+            if z is not None and abs(z[0] - rp) <= g:          # supported: update
+                res = z[0] - rp
+                r, v = rp + al * res, v + be * res / max(dt, 1e-3)
+                miss = 0
+                cand, cand_n = None, 0
+            else:
+                r, miss = rp, miss + 1
+                if z is not None and z[0] < rp - g:            # something nearer: needs confirmation
+                    cand_n = cand_n + 1 if cand is not None and abs(z[0] - cand) <= g else 1
+                    cand = z[0]
+                    if cand_n >= conf:
+                        r, v, miss, cand, cand_n = z[0], 0.0, 0, None, 0
+                if miss > hold:
+                    r = v = None
+        if r is None and z is not None:                        # start: confirm consecutive frames
+            cand_n = cand_n + 1 if cand is not None and abs(z[0] - cand) <= g else 1
+            cand = z[0]
+            if cand_n >= conf:
+                r, v, miss, cand, cand_n = z[0], 0.0, 0, None, 0
+        if r is not None:
+            out["f"].append(i); out["r"].append(r)
+            out["az"].append(z[1] if z is not None else np.nan); out["el"].append(z[2] if z is not None else np.nan)
+            out["score"].append(z[3] if z is not None else 0.0); out["snr_db"].append(z[3] if z is not None else 0.0)
+    return {k: np.asarray(v_, np.int32 if k == "f" else float) for k, v_ in out.items()}
 
 
 def run_grid(F, d, p, trig=None, poses=None):

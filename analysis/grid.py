@@ -14,7 +14,7 @@ from . import geometry as G
 
 GRID_DEFAULT = dict(cell=0.05, x_half=2.5, z_max=4.5, l_occ=0.85, l_free=0.4, l_min=-2.0, l_max=3.5,
                     decay=0.9, sigma_r=0.06, sigma_az=8.0, free_margin=0.15, free=True, snr_weight=True,
-                    blur=0.0, morph="none", morph_k=3, thr_hi=1.5, thr_lo=0.8, min_cells=3)
+                    blur=0.0, morph="none", morph_k=3, thr_hi=1.5, thr_lo=0.8, min_cells=3, extract="component")
 
 
 def float_trig(a_rad):
@@ -99,7 +99,8 @@ class Grid:
         np.clip(self.L, p["l_min"], p["l_max"], out=self.L)
 
     def obstacles(self):
-        """(r, az_deg, score) of the nearest cell per component and azimuth sector."""
+        """(r, az_deg, score) of the nearest cell per component (extract='component') or per component and 4 deg
+        azimuth sector (extract='sector': a wide object gives one point per sector)."""
         import cv2
         p = self.p
         L = self.L
@@ -120,7 +121,7 @@ class Grid:
         m = good[lab] & (self.Rc >= G.R_MIN)
         if not m.any():
             return np.zeros(0), np.zeros(0), np.zeros(0)
-        key = lab[m].astype(np.int64) * 1000 + self.sect[m]
+        key = lab[m].astype(np.int64) * 1000 + (self.sect[m] if p["extract"] == "sector" else 0)
         r, a, sc = self.Rc[m], self.Ac[m], mx[lab[m]]
         o = np.lexsort((r, key))
         k2 = key[o]

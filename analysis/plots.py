@@ -1,5 +1,5 @@
 """Figures from the tables only (no step is re-run). Every figure is optional: a missing table skips it.
-Output: derived/analysis-*/figures/<name>.png (+ .pdf with --pdf). Change a representation here and re-run
+Output: results/analysis-*/figures/<name>.png (+ .pdf with --pdf). Change a representation here and re-run
 `make plots` in seconds."""
 
 from __future__ import annotations
@@ -13,11 +13,12 @@ from . import common as C
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
 INK, INK2, GRID, SURF = "#0b0b0b", "#52514e", "#e4e3df", "#fcfcfb"
 FAM_ORDER = ["thr_nearest", "thr", "ca_cfar", "os_cfar", "rd_cfar", "cfar_dbscan", "grid", "grid_imu",
-             "grid_oracle", "app_threshold", "app_cfar"]
+             "grid_oracle", "grid_legacy", "grid_legacy_imu", "app_threshold", "app_cfar"]
 
 
 GROUPS = [("detectors", ["thr_nearest", "thr", "ca_cfar", "os_cfar", "rd_cfar", "cfar_dbscan"]),
-          ("grids and the recording app", ["grid", "grid_imu", "grid_oracle", "app_threshold", "app_cfar"])]
+          ("grids and the recording app", ["grid", "grid_imu", "grid_oracle", "grid_legacy", "grid_legacy_imu",
+                                           "app_threshold", "app_cfar"])]
 
 
 def fam_colour(fam):
@@ -48,7 +49,7 @@ def save(fig, name, pdf=False):
         fig.savefig(p.with_suffix(".pdf"), bbox_inches="tight")
     import matplotlib.pyplot as plt
     plt.close(fig)
-    C.log(f"  figure {p.relative_to(C.DATA)}")
+    C.log(f"  figure {C.rel(p)}")
 
 
 def fams(df):
@@ -200,10 +201,14 @@ def fig_default_vs_tuned(plt, pdf):
     if base is None:
         return
     rows = {"default": base}
+    hg = _summary("hgate")
+    if hg is not None and len(hg):
+        rows["default + IMU height gate"] = hg
     for pr in ("strict", "pooled"):
-        t = _summary(f"tuned_{pr}")
-        if t is not None and len(t):
-            rows[f"tuned ({pr})"] = t
+        for ob in ("plane", "arc"):
+            t = _summary(f"tuned_{pr}_{ob}")
+            if t is not None and len(t):
+                rows[f"tuned ({pr}, {ob})"] = t
     if len(rows) < 2:
         return
     allf = lambda S: S[S["take"].isna() & (S.env.isna() if "env" in S else True)].set_index("family")
@@ -212,9 +217,10 @@ def fig_default_vs_tuned(plt, pdf):
     w = 0.8 / len(rows)
     for k, (lab, S) in enumerate(rows.items()):
         A = allf(S).reindex(fl)
-        for ax, m in zip(axs, ("f1_50", "near_pd")):
-            ax.bar(np.arange(len(fl)) + k * w, A[m], width=w - 0.02, color=SERIES[k], label=lab)
-    for ax, t in zip(axs, ("F1 at 0.5 m", "nearest obstacle found (0.25 m)")):
+        for ax, m in zip(axs, ("f1_50", "arc_pd")):
+            if m in A:
+                ax.bar(np.arange(len(fl)) + k * w, A[m], width=w - 0.02, color=SERIES[k], label=lab)
+    for ax, t in zip(axs, ("F1 at 0.5 m (per direction)", "arc: nearest obstacle distance within 0.25 m")):
         ax.set_xticks(np.arange(len(fl)) + 0.4 - w / 2, fl, rotation=35, ha="right"); ax.set_title(t)
     axs[0].legend(fontsize=7)
     fig.suptitle("Default vs tuned settings (tuned on the ground truth; all takes)", fontsize=10)
@@ -331,6 +337,28 @@ def fig_pd_range(plt, pdf):
     save(fig, "eval_detection_vs_range", pdf)
 
 
+def fig_arc(plt, pdf):
+    """Arc view: distance to the nearest obstacle anywhere in the beam, direction ignored."""
+    S = _summary()
+    if S is None or "arc_pd" not in S:
+        return
+    fig, axs = plt.subplots(1, 2, figsize=(11, 4))
+    for ax, env in zip(axs, ("indoor", "outdoor")):
+        E = S[(S.env == env)] if "env" in S else S.iloc[:0]
+        for fam in fams(E):
+            q = E[E.family == fam].iloc[0]
+            ax.plot(q.arc_early_rate, q.arc_pd, MARKS.get(fam, "o"), color=fam_colour(fam), ms=8, mec=INK, mew=0.5,
+                    label=fam)
+        ax.set_xlabel("early alarms per frame (nearer than the truth by > 0.25 m)")
+        ax.set_title(f"{env}: nearest-obstacle distance, any direction")
+        ax.set_xlim(left=0); ax.set_ylim(0, 1)
+    axs[0].set_ylabel("nearest obstacle found within 0.25 m"); axs[1].legend(fontsize=7, ncol=2)
+    save(fig, "eval_arc", pdf)
+
+
+MARKS = {f: ("o" if f in GROUPS[0][1] else "s") for _, g in GROUPS for f in g}
+
+
 def fig_cost(plt, pdf):
     Cst = C.load_table("eval_cost", required=False)
     S = _summary()
@@ -349,10 +377,11 @@ def fig_cost(plt, pdf):
 
 # ------------------------------------------------------------------------------------------------ optimisation
 def fig_pareto(plt, pdf):
-    for prot in ("strict", "pooled"):
-        T = C.load_table(f"opt_trials_{prot}", required=False)
+    for prot, ob in [(p_, o_) for p_ in ("strict", "pooled") for o_ in ("plane", "arc")]:
+        T = C.load_table(f"opt_trials_{prot}_{ob}", required=False)
         if T is None or not len(T):
             continue
+        xk, yk = ("fp_per_frame_50", "miss_50") if ob == "plane" else ("arc_early_rate", "arc_miss")
         T = T[T.split.isin(["loto", "all"])] if prot == "strict" else T
         fl = fams(T)
         n = len(fl)
@@ -363,44 +392,46 @@ def fig_pareto(plt, pdf):
         from .optimise import pareto
         for ax, fam in zip(axs.ravel(), fl):
             q = T[T.family == fam]
-            ax.plot(q.fp_per_frame_50, 1 - q.miss_50, ".", color=GRID if False else "#b9b8b3", ms=3)
+            ax.plot(q[xk], 1 - q[yk], ".", color="#b9b8b3", ms=3)
             for k, (fold, g) in enumerate(q.groupby("fold")):
-                v = g[["miss_50", "fp_per_frame_50"]].fillna(1e9).to_numpy()
-                pf = g[pareto(v)].sort_values("fp_per_frame_50")
-                ax.step(pf.fp_per_frame_50, 1 - pf.miss_50, where="post", color=SERIES[k % 8], lw=1.2)
+                v = g[[yk, xk]].fillna(1e9).to_numpy()
+                pf = g[pareto(v)].sort_values(xk)
+                ax.step(pf[xk], 1 - pf[yk], where="post", color=SERIES[k % 8], lw=1.2)
             d = q[q.trial == 0]
-            ax.plot(d.fp_per_frame_50, 1 - d.miss_50, "x", color=INK, ms=6)
+            ax.plot(d[xk], 1 - d[yk], "x", color=INK, ms=6)
             ax.set_title(fam, fontsize=9)
         for ax in axs.ravel()[n:]:
             ax.axis("off")
-        fig.supxlabel("false positives per frame (0.5 m)"); fig.supylabel("recall (0.5 m)")
-        fig.suptitle(f"Training Pareto fronts per fold ({prot}); x = default setting", fontsize=10)
-        save(fig, f"opt_pareto_{prot}", pdf)
+        fig.supxlabel("false positives per frame (0.5 m)" if ob == "plane" else "early alarms per frame")
+        fig.supylabel("recall (0.5 m)" if ob == "plane" else "nearest obstacle found (0.25 m)")
+        fig.suptitle(f"Training Pareto fronts per fold ({prot}, {ob}); x = default setting", fontsize=10)
+        save(fig, f"opt_pareto_{prot}_{ob}", pdf)
 
 
 def fig_universality(plt, pdf):
-    for prot in ("strict", "pooled"):
-        R = C.load_table(f"opt_results_{prot}", required=False)
+    for prot, ob in [(p_, o_) for p_ in ("strict", "pooled") for o_ in ("plane", "arc")]:
+        R = C.load_table(f"opt_results_{prot}_{ob}", required=False)
         if R is None or not len(R):
             continue
+        sel, mk = ("tuned_f1", "f1_50") if ob == "plane" else ("tuned_arc", "arc_pd")
         L = R[(R.split == "loto")]
-        O = R[(R.split == "oracle") & (R.selection == "tuned_f1")]
+        O = R[(R.split == "oracle") & (R.selection == sel)]
         if not len(L) or not len(O):
             continue
         fl = fams(R)
         vals = {}
-        for sel in ("default", "tuned_f1"):
-            vals[sel] = L[L.selection == sel].groupby("family").f1_50.mean().reindex(fl)
-        vals["oracle (per scene)"] = O.groupby("family").f1_50.mean().reindex(fl)
+        for s_ in ("default", sel):
+            vals[s_] = L[L.selection == s_].groupby("family")[mk].mean().reindex(fl)
+        vals["oracle (per scene)"] = O.groupby("family")[mk].mean().reindex(fl)
         fig, ax = plt.subplots(figsize=(8, 3.6))
         w = 0.26
         for k, (lab, v) in enumerate(vals.items()):
             ax.bar(np.arange(len(fl)) + k * w, v, width=w - 0.02, color=SERIES[k], label=lab)
         ax.set_xticks(np.arange(len(fl)) + w, fl, rotation=35, ha="right")
-        ax.set_ylabel("F1 at 0.5 m on held-out take (mean)")
-        ax.set_title("Price of universality: one setting for all scenes vs the per-scene optimum")
+        ax.set_ylabel(f"{mk} on the held-out take (mean)")
+        ax.set_title(f"Price of universality ({ob}): one setting for all scenes vs the per-scene optimum")
         ax.legend(fontsize=7)
-        save(fig, f"opt_price_of_universality_{prot}", pdf)
+        save(fig, f"opt_price_of_universality_{prot}_{ob}", pdf)
 
 
 # ------------------------------------------------------------------------------------------------ CORDIC
@@ -444,14 +475,109 @@ def fig_cordic(plt, pdf):
         save(fig, "cordic_phase_real_data", pdf)
 
 
+# ------------------------------------------------------------------------------------------------ paper candidates
+def fig_operating_curves(plt, pdf):
+    """Found (nearest obstacle within 0.25 m, any direction) vs early alarms: every optimiser trial of every family
+    (grey), each family's upper envelope, and its default setting (x). Families are compared at equal early-alarm
+    budgets instead of at one arbitrary threshold."""
+    T = C.load_table("opt_trials_pooled_arc", required=False)
+    if T is None or not len(T):
+        return
+    from .ablation import operating_curve
+    fig, axs = plt.subplots(1, 2, figsize=(11, 4.3), sharey=True)
+    for ax, (gname, gf) in zip(axs, GROUPS):
+        ax.plot(T.arc_early_rate, T.arc_pd, ".", color="#d6d5d0", ms=2, zorder=0)
+        for fam in [f for f in gf if f in set(T.family)]:
+            g = T[T.family == fam].dropna(subset=["arc_pd", "arc_early_rate"])
+            x, y = operating_curve(g.arc_early_rate, g.arc_pd)
+            ax.step(x, y, where="post", color=fam_colour(fam), lw=1.6, label=fam)
+            d = g[g.trial == 0]
+            ax.plot(d.arc_early_rate, d.arc_pd, "x", color=fam_colour(fam), ms=8, mew=2)
+        for b in (0.1, 0.2):
+            ax.axvline(b, color=INK2, lw=0.6, ls=":")
+        ax.set_xlim(0, 0.6); ax.set_ylim(0, 0.55)
+        ax.set_title(gname); ax.legend(fontsize=7, loc="lower right")
+    fig.supxlabel("early alarms (share of frames reporting something more than 0.25 m nearer than the truth)",
+                  fontsize=9)
+    axs[0].set_ylabel("nearest obstacle found within 0.25 m")
+    fig.suptitle("Arc view, carried takes: operating curves of every family (x = default setting, grey = all "
+                 "optimiser trials)", fontsize=10)
+    save(fig, "paper_operating_curves", pdf)
+
+
+def fig_outcome_vs_distance(plt, pdf):
+    """Frame outcome (found / early / missed) by the distance of the true nearest obstacle: where in range a
+    forward-looking radar at chest height works, and where the floor and the near-range blind zone take over."""
+    for variant, tag in (("", "default"), ("_tuned_pooled_arc", "tuned for the arc view")):
+        Fr = C.load_table("eval_frames" + variant, required=False)
+        if Fr is None or "arc_covered" not in Fr:
+            continue
+        fams_ = [f for f in ("ca_cfar", "grid", "grid_legacy", "rd_cfar") if f in set(Fr.family)]
+        bins = np.array([0.3, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 5.0])
+        fig, axs = plt.subplots(1, len(fams_), figsize=(3.4 * len(fams_), 3.6), sharey=True)
+        for ax, fam in zip(np.atleast_1d(axs), fams_):
+            x = Fr[(Fr.family == fam) & Fr.arc_covered.astype(bool)]
+            at, ad = x.arc_truth.to_numpy(), x.arc_det.to_numpy()
+            ok = np.isfinite(at)
+            idx = np.digitize(at, bins)
+            shares, ns = [], []
+            for i in range(1, len(bins)):
+                m = ok & (idx == i)
+                n = m.sum()
+                found = (np.isfinite(ad) & (np.abs(ad - at) <= 0.25))[m].sum()
+                early = (np.isfinite(ad) & (ad < at - 0.25))[m].sum()
+                shares.append((found / max(n, 1), early / max(n, 1), 1 - (found + early) / max(n, 1)))
+                ns.append(n)
+            sh = np.array(shares)
+            pos = np.arange(len(sh))
+            bottom = np.zeros(len(sh))
+            for k, (lab, col) in enumerate((("found (±0.25 m)", "#1baf7a"), ("early alarm", "#eda100"),
+                                             ("missed / late", "#e34948"))):
+                ax.bar(pos, sh[:, k], bottom=bottom, color=col, width=0.85, edgecolor=SURF, lw=1, label=lab)
+                bottom += sh[:, k]
+            for p_, n in zip(pos, ns):
+                ax.text(p_, 1.01, f"{n}", ha="center", fontsize=6, color=INK2)
+            ax.set_xticks(pos, [f"{a:.2g}-{b:.2g}" for a, b in zip(bins[:-1], bins[1:])], rotation=45, fontsize=7)
+            ax.set_title(fam, fontsize=9); ax.set_ylim(0, 1.08)
+            ax.set_xlabel("true nearest obstacle (m)")
+        np.atleast_1d(axs)[0].set_ylabel("share of frames"); np.atleast_1d(axs)[-1].legend(fontsize=7, loc="lower right")
+        fig.suptitle(f"Arc view by obstacle distance, carried takes, {tag} (numbers: frames per bin)", fontsize=10)
+        save(fig, f"paper_outcome_vs_distance_{'default' if not variant else 'tuned'}", pdf)
+
+
+def fig_ablation(plt, pdf):
+    """Forest plot: each pre- / post-processing variant against the base pipeline, at a 10 % and a 20 % early-alarm
+    budget (best 'found' on the variant's threshold sweep)."""
+    S = C.load_table("ablation_summary", required=False)
+    if S is None or not len(S):
+        return
+    base = S[S.axis == "base"].iloc[0]
+    S = S[S.axis != "base"].reset_index(drop=True)
+    fig, ax = plt.subplots(figsize=(8, 0.26 * len(S) + 1.5))
+    y = np.arange(len(S))[::-1]
+    ax.axvline(base.pd_at_10, color=SERIES[0], lw=1, ls="--")
+    ax.axvline(base.pd_at_20, color=SERIES[1], lw=1, ls="--")
+    for yy, (_, r) in zip(y, S.iterrows()):
+        ax.plot([r.pd_at_10, r.pd_at_20], [yy, yy], color="#d6d5d0", lw=1.5, zorder=0)
+    ax.plot(S.pd_at_10, y, "o", color=SERIES[0], ms=6, label="at 10 % early alarms")
+    ax.plot(S.pd_at_20, y, "s", color=SERIES[1], ms=6, label="at 20 % early alarms")
+    ax.set_yticks(y, [f"{a}: {v}" for a, v in zip(S.axis, S.variant)], fontsize=7)
+    ax.set_xlabel("nearest obstacle found within 0.25 m (best over the threshold sweep)")
+    ax.set_title(f"One change at a time from the base (CA-CFAR defaults, dashed lines)", fontsize=10)
+    ax.legend(fontsize=7, loc="lower right")
+    save(fig, "paper_ablation", pdf)
+
+
+PAPER = [fig_operating_curves, fig_outcome_vs_distance, fig_ablation, fig_noise, fig_fp_causes]
 FIGS = [fig_noise, fig_targets, fig_timing, fig_calib, fig_sync, fig_truth, fig_eval_bars, fig_default_vs_tuned,
         fig_eval_env, fig_rings,
-        fig_fp_causes, fig_pr, fig_pd_range, fig_cost, fig_pareto, fig_universality, fig_cordic]
+        fig_fp_causes, fig_pr, fig_pd_range, fig_arc, fig_cost, fig_pareto, fig_universality, fig_cordic]
 
 
-def run(only=None, pdf=False):
+def run(only=None, pdf=False, all_figs=False):
+    """Paper candidates by default; all_figs also draws the diagnostic figures (calibration, sync, rings ...)."""
     plt = style()
-    for f in FIGS:
+    for f in (PAPER + [g for g in FIGS if g not in PAPER] if all_figs else PAPER):
         if only and not any(o in f.__name__ for o in only):
             continue
         try:

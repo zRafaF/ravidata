@@ -20,6 +20,7 @@ CARRIED = ["indoor_course", "outdoor_course"]
 ENV = {"pilot_chairs": "indoor", "static_pass1": "indoor", "static_pass2": "indoor", "indoor_course": "indoor",
        "outdoor_course": "outdoor"}
 QUICK = os.environ.get("RAVIDATA_QUICK", "") not in ("", "0")
+RESULTS = Path(os.environ.get("RAVIDATA_RESULTS", ROOT / "results"))   # tracked in git (analysis-quick is not)
 BIN_M = 0.04
 
 
@@ -30,11 +31,20 @@ def set_quick(q: bool):
 
 
 def out_dir(*parts) -> Path:
-    """derived/analysis-v1 (full runs) or derived/analysis-quick (quick tests: never mixed with full results)."""
-    p = DATA / "derived" / ("analysis-quick" if QUICK else "analysis-v1")
+    """results/analysis-v1 (full runs, kept in git: tables, figures, videos, Optuna studies, run log) or
+    results/analysis-quick (quick tests: never mixed with full results, not in git)."""
+    p = RESULTS / ("analysis-quick" if QUICK else "analysis-v1")
     p = p.joinpath(*parts)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def rel(p) -> str:
+    """Path for log lines, relative to the repository when possible."""
+    try:
+        return str(Path(p).resolve().relative_to(ROOT))
+    except ValueError:
+        return str(p)
 
 
 def log(msg: str):
@@ -78,7 +88,7 @@ def save_table(df, name: str, takes=None) -> Path:
             old = old[~old["take"].isin(list(takes))]
             df = pd.concat([old, df], ignore_index=True) if len(df) else old
     df.to_parquet(p, index=False)
-    log(f"  -> {p.relative_to(DATA)} ({len(df):,} rows)")
+    log(f"  -> {rel(p)} ({len(df):,} rows)")
     return p
 
 
@@ -95,7 +105,7 @@ def load_table(name: str, required: bool = True):
 def save_json(obj, name: str) -> Path:
     p = out_dir("tables") / f"{name}.json"
     p.write_text(json.dumps(obj, indent=1, default=float), encoding="utf-8")
-    log(f"  -> {p.relative_to(DATA)}")
+    log(f"  -> {rel(p)}")
     return p
 
 
