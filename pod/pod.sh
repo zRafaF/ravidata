@@ -8,8 +8,14 @@
 #   check   every model on one window of real frames; picks the largest window that fits in the GPU memory
 #           (WINDOW, then 48 / 32 / 16 on "out of memory"); only the models that pass run in 'run'
 #   run     every passing model on every take (windows overlap; WINDOW=0: all frames in one pass)
-#   upload  results -> HF (derived/maps-<TAG>/) if HF_TOKEN is set; always a tar in work/
-#   stop    STOP=1 (default) and the upload succeeded on RunPod: stop this pod so the GPU is not billed idle
+#   upload  results + every metric -> HF (derived/maps-<TAG>/) if HF_TOKEN is set; else a tar in work/
+#   stop    STOP=1 (default), on RunPod: stop this pod so the GPU is not billed idle, once the results are on HF
+#           or at least on the /workspace volume (kept across a stop). 'all' always ends with upload + stop,
+#           also when a stage fails, so it can run unattended.
+# Metrics (unfiltered, for the paper) in work/metrics -> uploaded: per model run.json (per window: frames, time
+# split load / model / save, fps, peak GPU memory), GPU samples every second (utilisation, memory, power,
+# temperature, clock) per check and run, stage times, the machine (nvidia-smi -q, lscpu, RAM, disk), the
+# installed packages of every model environment, the repo commit and pins.
 #   test    (make pod-test) setup + the first take + its frames + check, then a time estimate for 'all';
 #           uploads nothing, never stops the pod. 'all' afterwards reuses the environments and the weights.
 # Settings (environment / make variables): HF_REPO TAKES MODELS STEP RES WINDOW OVERLAP TAG STOP
@@ -30,6 +36,27 @@ mkdir -p "$WORK/logs"
 
 py_of () { case "$1" in pi3x) echo pod/third_party/pi3/.venv/bin/python ;; *) echo "pod/third_party/$1/.venv/bin/python" ;; esac; }
 repo_of () { case "$1" in pi3x) echo pod/third_party/pi3 ;; *) echo "pod/third_party/$1" ;; esac; }
+gpu_log_start () {   # $1: csv; nvidia-smi samples once per second until gpu_log_stop
+    GPU_LOG_PID=""
+    command -v nvidia-smi >/dev/null || return 0
+    nvidia-smi --query-gpu=timestamp,utilization.gpu,utilization.memory,memory.used,memory.total,power.draw,temperature.gpu,clocks.sm \
+        --format=csv,nounits -l 1 > "$1" 2>/dev/null &
+    GPU_LOG_PID=$!
+}
+gpu_log_stop () { if [ -n "${GPU_LOG_PID:-}" ]; then kill "$GPU_LOG_PID" 2>/dev/null || true; fi; GPU_LOG_PID=""; }
+machine_info () {    # once per pod: what the numbers were measured on
+    mkdir -p "$WORK/metrics"; local M="$WORK/metrics"
+    command -v nvidia-smi >/dev/null && { nvidia-smi -q > "$M/nvidia-smi-q.txt" 2>&1 || true
+        nvidia-smi --query-gpu=name,driver_version,memory.total,power.limit,pcie.link.gen.max,pcie.link.width.max \
+            --format=csv > "$M/gpu.csv" 2>&1 || true; }
+    lscpu > "$M/lscpu.txt" 2>&1 || true; free -m > "$M/memory.txt" 2>&1 || true; df -h . > "$M/disk.txt" 2>&1 || true
+    uname -a > "$M/uname.txt"; nproc > "$M/nproc.txt"
+    git rev-parse HEAD > "$M/ravidata_commit.txt" 2>/dev/null || true; cp pod/pins.env "$M/"
+    env | grep -E '^RUNPOD_(GPU_COUNT|CPU_COUNT|POD_HOSTNAME|DC_ID|GPU_NAME)=' > "$M/runpod_env.txt" 2>/dev/null || true
+    for m in $MODELS; do
+        [ -x "$(py_of $m)" ] && uv pip freeze --python "$(py_of $m)" > "$M/freeze_$m.txt" 2>/dev/null || true
+    done
+}
 peak_of () { grep -o '"peak_vram_gb": [0-9.]*' "$1/run.json" 2>/dev/null | awk '{print $2" GB"}'; }
 
 stage_setup () {
@@ -47,10 +74,16 @@ stage_data () {     # only what the maps need: the videos + the calibration (rad
     for t in $TAKES; do inc+=(--include "takes/$t/video.mp4" --include "takes/$t/take.json"); done
     uv run hf download "$HF_REPO" --repo-type dataset --local-dir "$DATA" "${inc[@]}"
 }
-stage_frames () {
+stage_frames () {    # redone when pod/frames.py or STEP / RES changed
+    sig="$(sha1sum pod/frames.py | cut -c1-12) step=$STEP res=$RES"
     for t in $TAKES; do
-        [ -f "$WORK/frames/$t/frames.json" ] && { echo "frames: $t already done"; continue; }
-        uv run python pod/frames.py --data "$DATA" --take "$t" --out "$WORK/frames/$t" --step "$STEP" --res "$RES"
+        d="$WORK/frames/$t"
+        if [ -f "$d/frames.json" ] && [ "$(cat "$d/settings.txt" 2>/dev/null)" = "$sig" ]; then
+            echo "frames: $t already done"; continue
+        fi
+        rm -rf "$d"
+        uv run python pod/frames.py --data "$DATA" --take "$t" --out "$d" --step "$STEP" --res "$RES"
+        echo "$sig" > "$d/settings.txt"
     done
 }
 stage_check () {      # FRAMES_DIR: where the frames of the first take are (the test uses a short clip)
@@ -62,11 +95,14 @@ stage_check () {      # FRAMES_DIR: where the frames of the first take are (the 
             echo "check $m: SKIP (setup failed, see $WORK/logs/setup_$m.log)"; continue
         fi
         for w in $tries; do
-            log="$WORK/logs/check_${m}_w$w.log"; rm -rf "$WORK/check/$m"
+            log="$WORK/logs/check_${m}_w$w.log"; rm -rf "$WORK/check/$m"; mkdir -p "$WORK/metrics"
+            gpu_log_start "$WORK/metrics/gpu_check_${m}_w$w.csv"
             if "$(py_of $m)" "pod/runners/run_$m.py" --frames "$fdir" --out "$WORK/check/$m" --window 0 \
                   --max-frames "$w" --repo "$(repo_of $m)" > "$log" 2>&1; then
-                ok="$w"; break
-            elif grep -qiE "out of memory|OutOfMemoryError" "$log"; then
+                gpu_log_stop; ok="$w"
+                mkdir -p "$WORK/metrics/check"; cp "$WORK/check/$m/run.json" "$WORK/metrics/check/${m}_w$w.json"
+                break
+            elif gpu_log_stop; grep -qiE "out of memory|OutOfMemoryError" "$log"; then
                 echo "check $m: window $w does not fit in the GPU memory, trying a smaller one"
             else
                 echo "check $m: FAIL (see $log)"; tail -5 "$log"; break
@@ -85,16 +121,19 @@ stage_run () {
         for t in $TAKES; do
             out="$WORK/out/$m/$t"
             [ -f "$out/run.json" ] && { echo "run: $m/$t already done"; continue; }
-            echo "run: $m on $t (window $w, overlap $ov)"
+            echo "run: $m on $t (window $w, overlap $ov)"; mkdir -p "$WORK/metrics"
+            gpu_log_start "$WORK/metrics/gpu_run_${m}_$t.csv"
             "$(py_of $m)" "pod/runners/run_$m.py" --frames "$WORK/frames/$t" --out "$out" --window "$w" \
                 --overlap "$ov" --repo "$(repo_of $m)" < /dev/null 2>&1 | tee "$WORK/logs/run_${m}_$t.log" \
                 || echo "run: $m on $t FAILED (log kept, continuing)"
+            gpu_log_stop
         done
     done < "$WORK/check_ok.txt"
 }
 stage_upload () {
     rm -f "$WORK/uploaded_$TAG"
-    mkdir -p "$WORK/out"; cp -r "$WORK/logs" "$WORK/out/"; cp "$WORK/check_ok.txt" "$WORK/out/" 2>/dev/null || true
+    machine_info
+    mkdir -p "$WORK/out"; cp -r "$WORK/logs" "$WORK/metrics" "$WORK/out/"; cp "$WORK/check_ok.txt" "$WORK/out/" 2>/dev/null || true
     for t in $TAKES; do cp "$WORK/frames/$t/frames.json" "$WORK/out/frames_$t.json" 2>/dev/null || true; done
     echo "results: $WORK/out ($(du -sh "$WORK/out" | cut -f1))"
     if [ -n "${HF_TOKEN:-}" ]; then
@@ -132,21 +171,47 @@ print(f"{m:12s} window {w:3d}: {win:5.1f} s per window, peak {r.get('peak_vram_g
 PY
     done < "$WORK/check_ok.txt"
     for m in $MODELS; do grep -q "^$m " "$WORK/check_ok.txt" || echo "$m: FAILED, see $WORK/logs/check_${m}_w*.log"; done
+    machine_info
+    autostop_status
     echo "next: make pod   (reuses the environments and the downloaded weights)"
 }
 stage_stop () {
     if [ "$STOP" != "1" ]; then echo "STOP=$STOP: the pod keeps running (stop it in the RunPod console)"; return; fi
-    if [ ! -f "$WORK/uploaded_$TAG" ]; then echo "results not uploaded: the pod keeps running so nothing is lost"; return; fi
-    if [ -n "${RUNPOD_POD_ID:-}" ] && command -v runpodctl >/dev/null; then
-        echo "results are on Hugging Face: stopping pod $RUNPOD_POD_ID"; sync; runpodctl stop pod "$RUNPOD_POD_ID"
-    else
-        echo "not a RunPod pod (no RUNPOD_POD_ID / runpodctl): stop the machine yourself"
+    if [ -z "${RUNPOD_POD_ID:-}" ] || ! command -v runpodctl >/dev/null; then
+        echo "not a RunPod pod (no RUNPOD_POD_ID / runpodctl): stop the machine yourself"; return
     fi
+    if [ -f "$WORK/uploaded_$TAG" ]; then
+        echo "results are on Hugging Face: stopping pod $RUNPOD_POD_ID"
+    elif [[ "$PWD" == /workspace/* ]]; then
+        echo "results NOT uploaded but kept on the /workspace volume ($PWD/$WORK): stopping pod $RUNPOD_POD_ID;"
+        echo "start it again to get them (make pod-upload)"
+    else
+        echo "results not uploaded and not on the /workspace volume: the pod keeps running so nothing is lost"; return
+    fi
+    sync; runpodctl stop pod "$RUNPOD_POD_ID"
+}
+autostop_status () {
+    if [ "$STOP" != "1" ]; then echo "auto-stop: off (STOP=$STOP)"
+    elif [ -n "${RUNPOD_POD_ID:-}" ] && command -v runpodctl >/dev/null; then
+        if [ -n "${HF_TOKEN:-}" ]; then tok="HF_TOKEN set"; else tok="HF_TOKEN NOT set: results stay on the volume"; fi
+        echo "auto-stop: ready (runpodctl found, pod $RUNPOD_POD_ID; $tok)"
+    else echo "auto-stop: NOT available (no runpodctl / RUNPOD_POD_ID): 'make pod' will finish but not stop the pod"; fi
+}
+run_all () {   # every stage; on a failure skip to upload + stop, so an unattended run never idles the GPU
+    mkdir -p "$WORK/metrics"; local failed=""
+    for s in setup data frames check run; do
+        echo "=== $s ==="; local t=$(date +%s)
+        if ! "stage_$s" 2>&1 | tee -a "$WORK/logs/pod.log"; then failed="$s"; fi
+        echo "$s,$t,$(date +%s),${failed:-ok}" >> "$WORK/metrics/stages.csv"
+        if [ -n "$failed" ]; then echo "=== $s FAILED: uploading what exists, then stopping ===" | tee -a "$WORK/logs/pod.log"; break; fi
+    done
+    echo "=== upload ==="; stage_upload 2>&1 | tee -a "$WORK/logs/pod.log" || echo "upload FAILED" | tee -a "$WORK/logs/pod.log"
+    echo "=== stop ==="; stage_stop 2>&1 | tee -a "$WORK/logs/pod.log"
 }
 
 stage="${1:-all}"
 case "$stage" in
-  all) for s in setup data frames check run upload stop; do echo "=== $s ==="; "stage_$s" 2>&1 | tee -a "$WORK/logs/pod.log"; done ;;
+  all) run_all ;;
   setup|data|frames|check|run|upload|stop|test) "stage_$stage" 2>&1 | tee -a "$WORK/logs/pod.log" ;;
   *) echo "stages: setup data frames check run upload stop all test"; exit 2 ;;
 esac

@@ -46,9 +46,10 @@ per-scene optimisation):
 | [VGGT](https://arxiv.org/abs/2503.11651) (Meta, CVPR 2025), baseline | `facebook/VGGT-1B` | frames only | up to an unknown scale | non-commercial |
 
 The same frames go to every model (`pod/frames.py`). They are **keyframes chosen by motion**: a frame is kept
-when the view has moved enough since the last kept one (median optical flow of tracked corners ≥ 4 % of the
-image width), at least one per second when standing still; near-identical frames add nothing to a
-reconstruction. Walking gives about 2–3 keyframes per second. Each keyframe is turned upright, undistorted with
+when the view has moved enough since the last kept one (median optical flow of tracked corners ≥ 8 % of the
+image width), at least one per second when standing still, so near-identical frames are dropped; a
+motion-blurred candidate (sharpness, the variance of the Laplacian, below half the recent median) is skipped for
+the next sharp one. Walking gives about 2 keyframes per second. Each keyframe is turned upright, undistorted with
 the calibrated intrinsics, tone-mapped from Log to normal contrast and resized to 518 × 518. The takes are cut
 into windows of 64 keyframes that share 16 with the next one, so the windows can be chained afterwards; no model
 ever sees a whole take at once.
@@ -58,7 +59,12 @@ tags (10, 12, 17, known size) give each window's metric scale and pose check; th
 score it. Each model runs in its own environment (`pod/envs.sh`, repositories pinned in `pod/pins.env`).
 
 Per model and take the pod writes `win_NNN.npz` (frame numbers, camera-to-world poses in OpenCV axes, depth,
-confidence, intrinsics) and `run.json` (checkpoint, repository commit, window, run time, peak GPU memory).
+confidence, intrinsics) and `run.json`. Every running metric is kept, unfiltered, for the comparison: per window
+the frames, the time split into image loading / model / saving, frames per second and peak GPU memory (allocated
+and reserved); per run the model loading time, totals, checkpoint, repository commit and versions. Next to them,
+in `metrics/`: GPU samples every second during every check and run (utilisation, memory, power, temperature,
+clock), the check attempts (including the window sizes that ran out of memory), stage times, the machine
+(`nvidia-smi -q`, CPU, RAM, disk) and the installed packages of every model environment.
 
 The comparison, on CPU: AprilTag positions and sizes against their known size, start/end loop closure, camera
 rotation against the phone gyroscope, and range to the tags against the radar. The scoring tool is being
@@ -122,9 +128,11 @@ that fits, the peak GPU memory, and the expected time of the full run. Fix or dr
    with 48, 32 and 16 and keeps the largest that fits; a model that fails is left out (log in `work/logs/`);
 5. `run` every model that passed, on both takes;
 6. `upload` the results to `derived/maps-v1/` in the dataset (also `work/maps-v1.tar`);
-7. `stop` once the upload succeeded, the pod stops itself (`runpodctl stop pod`); `STOP=0` keeps it running.
+7. `stop` the pod stops itself (`runpodctl stop pod`) once the results are on Hugging Face, or at least on the
+   `/workspace` volume, which survives a stop; `STOP=0` keeps it running.
 
-Without a token nothing is uploaded and the pod is not stopped, so nothing is lost. Expected on a 3090 (about
+`make pod` always ends with upload + stop, also when a stage fails (it uploads what exists, with the logs), so it
+can run unattended; `make pod-test` prints whether the auto-stop is available on the pod. Expected on a 3090 (about
 1500–3000 keyframes per model; `make pod-test` gives the real figures): setup 15–25 min, frames ~5 min, check ~10 min, the
 four models 45–90 min, upload ~10 min (roughly 10 GB of maps): about 1.5–2.5 h in all. Other settings: `MODELS="vggt pi3x"`, `TAKES=indoor_course`, `WINDOW`,
 `OVERLAP`, `STEP`, `RES`, `TAG` (see `make help`).

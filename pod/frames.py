@@ -1,7 +1,7 @@
 """Frames for the map models: decode a take's video, undistort, tone-map Log -> display, resize, sample.
 
     uv run python pod/frames.py --data data/ravidata --take indoor_course --out work/frames/indoor_course \
-        [--select motion|step] [--step 2] [--min-flow 0.04] [--res 518] [--max-frames N]
+        [--select motion|step] [--step 2] [--min-flow 0.08] [--blur-ratio 0.5] [--res 518] [--max-frames N]
 
 Writes ``<out>/rgb/000000.jpg …`` and ``<out>/frames.json``:
 ``{"take", "video", "res", "step", "K" (3x3, pixels of the written frames, undistorted pinhole), "frames":
@@ -9,7 +9,8 @@ Writes ``<out>/rgb/000000.jpg …`` and ``<out>/frames.json``:
 
 - Which frames: keyframes by motion (default). Near-identical frames add nothing to a reconstruction and make the
   windows span less of the walk, so a frame is kept only when the view moved enough since the last kept one
-  (median optical flow of tracked corners >= 4 % of the width), at least one per second when standing still.
+  (median optical flow of tracked corners >= 8 % of the width), at least one per second when standing still;
+  motion-blurred candidates (sharpness < 0.5 x the recent median) are skipped for the next sharp one.
 
 - Orientation: frames are turned upright with the video's display rotation (the published videos are already
   upright; the phone originals are stored sideways).
@@ -73,22 +74,36 @@ def tone(rgb: np.ndarray, p: dict) -> np.ndarray:
 
 
 class MotionGate:
-    """Keyframe selection: keep a frame when the view has moved enough since the last kept one (median optical
-    flow of tracked corners >= ``min_flow`` x image width), or ``max_gap`` s have passed; never closer than
-    ``min_gap`` s. Standing still -> 1 frame per ``max_gap``; walking or turning -> more frames."""
+    """Keyframe selection.
 
-    def __init__(self, min_flow: float = 0.04, min_gap: float = 0.1, max_gap: float = 1.0, size: int = 256):
+    - Motion: keep a frame when the view has moved enough since the last kept one (median optical flow of
+      tracked corners >= ``min_flow`` x image width), or ``max_gap`` s have passed; never closer than ``min_gap``
+      s. Standing still -> 1 frame per ``max_gap``; walking or turning -> more frames, but no near-duplicates.
+    - Sharpness: a candidate whose sharpness (variance of the Laplacian) is below ``blur_ratio`` x the median of
+      the last ``blur_window`` candidates is motion-blurred: skipped, the next sharp candidate is taken instead.
+      After ``2 x max_gap`` without a keyframe the blur test is dropped (no long holes)."""
+
+    def __init__(self, min_flow: float = 0.08, min_gap: float = 0.1, max_gap: float = 1.0,
+                 blur_ratio: float = 0.5, blur_window: int = 30, size: int = 256):
+        from collections import deque
         self.min_flow, self.min_gap, self.max_gap, self.size = min_flow, min_gap, max_gap, size
+        self.blur_ratio, self.sharp_hist = blur_ratio, deque(maxlen=blur_window)
         self.ref, self.pts, self.t_ref = None, None, None
+        self.n_candidates = self.n_blurry = 0
 
-    def __call__(self, rgb: np.ndarray, t: float) -> tuple[bool, float]:
+    def __call__(self, rgb: np.ndarray, t: float) -> tuple[bool, float, float]:
+        """-> (keep, flow since the last keyframe (nan if not measured), sharpness)."""
         import cv2
         g = cv2.cvtColor(cv2.resize(rgb, (self.size, self.size), interpolation=cv2.INTER_AREA), cv2.COLOR_RGB2GRAY)
+        sharp = float(cv2.Laplacian(g, cv2.CV_32F).var())
+        self.n_candidates += 1
+        med = float(np.median(self.sharp_hist)) if len(self.sharp_hist) >= 5 else 0.0
+        self.sharp_hist.append(sharp)
         if self.ref is None:
-            return self._keep(g, t), float("nan")
+            return self._keep(g, t), float("nan"), sharp
         dt = t - self.t_ref
         if dt < self.min_gap:
-            return False, float("nan")
+            return False, float("nan"), sharp
         flow = 1.0                                            # nothing to track = the view changed completely
         if self.pts is not None and len(self.pts) >= 20:
             nxt, ok, _ = cv2.calcOpticalFlowPyrLK(self.ref, g, self.pts, None, winSize=(21, 21), maxLevel=3)
@@ -96,8 +111,11 @@ class MotionGate:
             if ok.sum() >= 20:
                 flow = float(np.median(np.linalg.norm((nxt - self.pts)[ok].reshape(-1, 2), axis=1))) / self.size
         if flow >= self.min_flow or dt >= self.max_gap:
-            return self._keep(g, t), flow
-        return False, flow
+            if sharp < self.blur_ratio * med and dt < 2 * self.max_gap:
+                self.n_blurry += 1
+                return False, flow, sharp
+            return self._keep(g, t), flow, sharp
+        return False, flow, sharp
 
     def _keep(self, g, t) -> bool:
         import cv2
@@ -117,9 +135,11 @@ def main(argv=None):
                     help="motion: keyframes by optical flow (default); step: every --step-th frame")
     ap.add_argument("--step", type=int, default=2,
                     help="look at every N-th video frame (motion: candidates, 2 = 15 fps; step: 6 = 5 fps)")
-    ap.add_argument("--min-flow", type=float, default=0.04, help="motion: median flow, fraction of the width")
+    ap.add_argument("--min-flow", type=float, default=0.08, help="motion: median flow, fraction of the width")
     ap.add_argument("--min-gap", type=float, default=0.1, help="motion: at most one keyframe per this many s")
     ap.add_argument("--max-gap", type=float, default=1.0, help="motion: at least one keyframe per this many s")
+    ap.add_argument("--blur-ratio", type=float, default=0.5,
+                    help="motion: skip candidates sharper than this x the recent median (0 = keep blurred frames)")
     ap.add_argument("--res", type=int, default=518, help="output size (square; 518 = 37 x 14 for ViT patch 14)")
     ap.add_argument("--max-frames", type=int, default=0, help="stop after N written frames (tests)")
     ap.add_argument("--video", help="override the video path (default <data>/takes/<take>/video.mp4)")
@@ -128,7 +148,7 @@ def main(argv=None):
     video = Path(a.video) if a.video else data / "takes" / a.take / "video.mp4"
     (out / "rgb").mkdir(parents=True, exist_ok=True)
     tp = tone_params(video)
-    gate = MotionGate(a.min_flow, a.min_gap, a.max_gap) if a.select == "motion" else None
+    gate = MotionGate(a.min_flow, a.min_gap, a.max_gap, a.blur_ratio) if a.select == "motion" else None
     frames, K_out, maps, n_video = [], None, None, 0
     with av.open(str(video)) as c:
         vs = c.streams.video[0]
@@ -140,9 +160,9 @@ def main(argv=None):
             rot = int(round(getattr(fr, "rotation", 0) or 0))
             img = upright(fr.to_ndarray(format="rgb24"), rot)
             t = float(fr.time or 0.0)
-            flow = float("nan")
+            flow, sharp = float("nan"), float("nan")
             if gate is not None:
-                keep, flow = gate(img, t)
+                keep, flow, sharp = gate(img, t)
                 if not keep:
                     continue
             if maps is None:
@@ -159,10 +179,12 @@ def main(argv=None):
             cv2.imwrite(str(out / "rgb" / f"{k:06d}.jpg"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR),
                         [cv2.IMWRITE_JPEG_QUALITY, 95])
             frames.append({"i": k, "video_frame": i, "t_video": t,
-                           **({} if np.isnan(flow) else {"flow": round(flow, 4)})})
+                           **({} if np.isnan(flow) else {"flow": round(flow, 4)}),
+                           **({} if np.isnan(sharp) else {"sharpness": round(sharp, 1)})})
             if a.max_frames and len(frames) >= a.max_frames:
                 break
-    sel = ({"select": "motion", "min_flow": a.min_flow, "min_gap_s": a.min_gap, "max_gap_s": a.max_gap}
+    sel = ({"select": "motion", "min_flow": a.min_flow, "min_gap_s": a.min_gap, "max_gap_s": a.max_gap,
+            "blur_ratio": a.blur_ratio, "candidates": gate.n_candidates, "skipped_blurry": gate.n_blurry}
            if gate is not None else {"select": "step"})
     meta = {"take": a.take, "video": video.name, "res": a.res, "step": a.step, **sel, "n_video_frames": n_video,
             "K": K_out.tolist(), "undistorted": True, "tone": tp, "frames": frames}
