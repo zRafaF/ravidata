@@ -103,45 +103,20 @@ and in the dataset's `apriltags.json` (`used`).
 
 ## GPU pod (maps only)
 
-Target: **RunPod, one RTX 3090 (24 GB)**, any PyTorch / CUDA 12.8 image, **80 GB** volume at `/workspace` (the
-environments, the model weights and the caches live there, so they survive a pod stop). Put a Hugging Face token
-with write access in the pod's environment variables as `HF_TOKEN` (a RunPod secret), then in the pod's terminal:
+The maps are made once on a rented GPU (an RTX 3090, 24 GB, is enough); everything else runs on a PC.
 
 ```bash
 apt-get update && apt-get install -y make git tmux
 cd /workspace && git clone https://github.com/zRafaF/ravidata && cd ravidata
 tmux new -s pod
-make pod-test    # ~30 min: installs every model, runs each on one window of real frames, prints a time estimate
-make pod         # the real run; reuses what pod-test installed and downloaded
+make pod-test    # install + one window per model: pass/fail, memory, time estimate
+make pod         # the real run: frames, maps, upload to derived/maps-v1/, then the pod stops itself
+make pod-status  # progress, from a second tmux window
 ```
 
-`make pod-test` uploads nothing and never stops the pod. It ends with one line per model: pass or fail, the window
-that fits, the peak GPU memory, and the expected time of the full run. Fix or drop a failing model
-(`MODELS="vggt pi3x"`) before `make pod`.
-
-`make pod` runs, in order (each also alone as `make pod-<stage>`; finished work is skipped on a re-run):
-
-1. `setup` uv, one environment per model;
-2. `data` the two carried videos and the calibration from Hugging Face;
-3. `frames` the 518 × 518 frames;
-4. `check` each model on one window of real frames; if 64 frames do not fit in the GPU memory it retries
-   with 48, 32 and 16 and keeps the largest that fits; a model that fails is left out (log in `work/logs/`);
-5. `run` every model that passed, on both takes;
-6. `upload` the results to `derived/maps-v1/` in the dataset (also `work/maps-v1.tar`);
-7. `stop` the pod stops itself (`runpodctl stop pod`) once the results are on Hugging Face, or at least on the
-   `/workspace` volume, which survives a stop; `STOP=0` keeps it running.
-
-`make pod` always ends with upload + stop, also when a stage fails (it uploads what exists, with the logs), so it
-can run unattended; `make pod-test` prints whether the auto-stop is available on the pod. Expected on a 3090 (about
-1500–3000 keyframes per model; `make pod-test` gives the real figures): setup 15–25 min, frames ~5 min, check ~10 min, the
-four models 45–90 min, upload ~10 min (roughly 10 GB of maps): about 1.5–2.5 h in all. Other settings: `MODELS="vggt pi3x"`, `TAKES=indoor_course`, `WINDOW`,
-`OVERLAP`, `STEP`, `RES`, `TAG` (see `make help`).
-
-Back on your PC:
-
-```bash
-make maps        # derived/maps-v1 -> data/ravidata/derived/maps-v1/<model>/<take>/
-```
+Full runbook (pod settings, tokens, stages, monitoring, a tmux cheat-sheet, troubleshooting):
+[docs/pod.md](docs/pod.md). Models, frame selection, the measured memory / time and the running metrics:
+[docs/maps.md](docs/maps.md). Back on the PC: `make maps`.
 
 ## Recording
 

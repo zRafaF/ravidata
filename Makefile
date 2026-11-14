@@ -2,7 +2,7 @@
 # `make` and `git` are the only other things a machine needs (`apt-get install -y make` on a fresh pod).
 # Code: https://github.com/zRafaF/ravidata   Data: https://huggingface.co/datasets/DoninhaD/ravidata
 .PHONY: help install test rec rec-sim align pack calib targets data dataset dataset-upload \
-        maps pod pod-test pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
+        maps pod pod-test pod-status pod-watch pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
 
 HF_REPO ?= DoninhaD/ravidata
 TAKES   ?= indoor_course outdoor_course
@@ -35,6 +35,8 @@ help:
 	@echo "  make pod-test         first: install every model and try it on one window of frames (~30 min);"
 	@echo "                        prints pass/fail, GPU memory and a time estimate; uploads nothing"
 	@echo "  make pod HF_TOKEN=... setup + data + frames + check + run + upload + stop  (inside tmux)"
+	@echo "  make pod-status       progress of a running 'make pod' (windows done per model, time left, GPU)"
+	@echo "  make pod-watch        the same, refreshed every 30 s (Ctrl-C to quit); see docs/pod.md for tmux"
 	@echo "  make pod-<stage>      one stage: setup data frames check run upload stop"
 	@echo "  STOP=1 (default) stops the RunPod pod once the maps are on Hugging Face; STOP=0 keeps it"
 	@echo "  variables: MODELS='$(MODELS)' TAKES='$(TAKES)'"
@@ -91,6 +93,12 @@ pod: $(UV)
 
 pod-test pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop: $(UV)
 	$(POD_ENV) bash pod/pod.sh $(@:pod-%=%)
+
+pod-status:
+	@python3 pod/status.py
+
+pod-watch:
+	watch -n 30 python3 pod/status.py
 
 pod-clean:
 	rm -rf work pod/third_party
