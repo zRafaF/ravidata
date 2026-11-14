@@ -39,3 +39,8 @@ dev = [
 viz = [
     "viser>=1.1",                       # scripts/map_viz.py (3D viewer in the browser)
 ]
+depth = [                               # scripts/static_depth.py (monocular depth on the CPU)
+    "torch>=2.4",
+    "transformers>=4.45",
+    "pillow>=10",
+]

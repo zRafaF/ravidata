@@ -85,7 +85,8 @@ here uploads anything or needs a token (the dataset is public).
 git clone https://github.com/zRafaF/ravidata && cd ravidata
 make help        # lists every command
 make test        # optional: installs the Python env and runs the unit tests (checks the install works)
-make data        # downloads the dataset -> data/ravidata   (DATA_TAKES="indoor_course" for one take)
+make data        # the recordings -> data/ravidata   (DATA_TAKES="indoor_course" for one take)
+make data-all    # everything, the derived maps included (~5 GB)
 ```
 
 ## AprilTags

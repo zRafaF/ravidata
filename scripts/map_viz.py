@@ -305,8 +305,8 @@ def window_consistency(w: Window, gap: int = 3, stride: int = 8) -> float:
     return float(np.median(errs)) if errs else float("nan")
 
 
-VIEWS = ["whole take (chained)", "one window", "two windows (overlap)"]
-CHAINING = {"camera poses": "poses", "dense points": "points"}
+VIEWS = ["whole take (chained)", "one window", "two windows (overlap)", "fused map (TSDF)"]
+CHAINING = {"camera poses": "poses", "dense points": "points", "pose graph (map_fuse)": "graph"}
 PAIR_TINT = [np.array([255, 70, 50]), np.array([40, 140, 255])]
 
 
@@ -350,16 +350,20 @@ class Viewer:
                                           hint="how consecutive windows are joined: similarity fit on the dense points "
                                                "of the shared keyframes, or scale from depth + the shared camera poses")
             self.g_follow = g.add_checkbox("Re-centre the view", True)
+            self.g_fuse = g.add_button("Fuse this model + take (TSDF)", color="violet",
+                                       hint="loop closures + pose graph + ICP + weighted TSDF on the CPU (~2-3 min); "
+                                            "same as  make fuse MODEL=<model> TAKE=<take>")
             self.g_win_md = g.add_markdown("")
         with g.add_folder("Points"):
             self.g_kstep = g.add_slider("Keyframe step", 1, 10, 1, 2, hint="use every N-th keyframe")
-            self.g_stride = g.add_slider("Pixel stride", 2, 16, 1, 6, hint="every N-th pixel of each depth map")
+            self.g_stride = g.add_slider("Pixel stride", 1, 16, 1, 6, hint="every N-th pixel of each depth map")
             self.g_conf = g.add_slider("Drop low confidence %", 0, 90, 5, 30,
                                        hint="per frame: drop the pixels below this confidence percentile")
             self.g_dmax = g.add_slider("Max depth", 0.5, 20.0, 0.5, 8.0, hint="model units (m for metric models)")
             self.g_edges = g.add_checkbox("Remove flying pixels", True, hint="drop pixels at depth discontinuities")
             self.g_color = g.add_dropdown("Colour", ["image", "depth", "height", "window"], initial_value="image")
-            self.g_psize = g.add_slider("Point size", 0.002, 0.05, 0.001, 0.01)
+            self.g_psize = g.add_slider("Point size", 0.002, 0.3, 0.002, 0.01,
+                                        hint="world units; far, sparse scenes (outdoor) need large points")
             self.g_apply = g.add_button("Apply")
         with g.add_folder("Cameras"):
             self.g_path = g.add_checkbox("Camera path", True)
@@ -384,6 +388,7 @@ class Viewer:
         self.g_win.on_update(lambda _: self.redraw_view())
         self.g_step.on_click(lambda e: self._step(e.target.value))
         self.g_chain.on_update(lambda _: self.rechain())
+        self.g_fuse.on_click(lambda _: threading.Thread(target=self.fuse, daemon=True).start())
         self.g_apply.on_click(lambda _: self.redraw_points())
         self.g_color.on_update(lambda _: self.redraw_points())
         self.g_psize.on_update(lambda _: self._set_psize())
@@ -398,6 +403,30 @@ class Viewer:
         @self.server.on_client_connect
         def _(client):
             self._place_camera(client)
+
+    def fuse(self):
+        """Run scripts/map_fuse.py for the current model + take (reusing the loaded windows), then show it."""
+        import map_fuse
+        if getattr(self, "_fusing", False) or not hasattr(self, "wins"):
+            return
+        self._fusing = True
+        model, take = self.g_model.value, self.g_take.value
+        lines: list[str] = []
+
+        def log(msg):
+            print(msg, flush=True)
+            lines.append(msg.strip())
+            self.g_win_md.content = "**fusing** " + f"{model} / {take}  \n" + "  \n".join(lines[-8:])
+        try:
+            self.g_fuse.disabled = True
+            map_fuse.run(self.maps, self.data, model, take, wins=self.wins, log=log)
+            self.g_view.value = VIEWS[3]                 # show the result
+            self.redraw_view()
+        except Exception as e:                           # keep the viewer alive
+            log(f"fusion failed: {e!r}")
+        finally:
+            self._fusing = False
+            self.g_fuse.disabled = False
 
     def _step(self, which: str):
         n = len(getattr(self, "wins", [])) or 1
@@ -423,6 +452,40 @@ class Viewer:
     def method(self) -> str:
         return CHAINING.get(self.g_chain.value, "poses")
 
+    def fused_dir(self, model: str, take: str) -> Path:
+        return self.maps / "fused" / model / take
+
+    def _chain(self, wins, model, take, free=False) -> Chain:
+        """Robust chaining; with "pose graph", the window similarities optimised by scripts/map_fuse.py replace
+        the chained ones (the join diagnostics stay those of the robust chaining)."""
+        m = self.method()
+        ch = chain_windows(wins, free=free, method="poses" if m == "graph" else m)
+        f = self.fused_dir(model, take) / "poses.npz"
+        if m == "graph":
+            if not f.exists():
+                print(f"no pose graph for {model}/{take} yet: run  make fuse MODEL={model} TAKE={take}")
+                return ch
+            z = np.load(f)
+            if len(z["window_s"]) == len(wins):
+                ch.S = [float(x) for x in z["window_s"]]
+                ch.G = []
+                for R, t in zip(z["window_R"], z["window_t"]):
+                    G = np.eye(4); G[:3, :3] = R; G[:3, 3] = t
+                    ch.G.append(G)
+        return ch
+
+    def border(self, shape) -> np.ndarray:
+        """Valid-pixel mask (drops the black undistortion border the models were given)."""
+        if getattr(self, "_mask518", None) is None:
+            try:
+                import map_fuse
+                self._mask518 = map_fuse.valid_mask(self.data, 518)
+            except Exception as e:                       # no calibration: keep everything
+                print(f"no border mask ({e})")
+                self._mask518 = np.ones((518, 518), bool)
+        import map_fuse
+        return map_fuse.mask_for(self._mask518, shape)
+
     def get(self, model: str, take: str, with_maps: bool = True):
         key = (model, take)
         if key in self.cache and (not with_maps or self.cache[key][0][0].depth is not None):
@@ -434,7 +497,7 @@ class Viewer:
             self.cache = {k: v for k, v in self.cache.items() if v[0][0].depth is None or k == key}
             return wins, ch
         wins = load_windows(self.maps / model / take, with_maps)
-        ch = chain_windows(wins, free=not with_maps, method=self.method())
+        ch = self._chain(wins, model, take, free=not with_maps)
         if with_maps:                                   # keep one full model in memory
             self.cache = {k: v for k, v in self.cache.items() if v[0][0].depth is None}
         self.cache[key] = (wins, ch)
@@ -468,7 +531,7 @@ class Viewer:
         with self.lock:
             if not hasattr(self, "wins"):
                 return
-            self.chain = chain_windows(self.wins, method=self.method())
+            self.chain = self._chain(self.wins, self.g_model.value, self.g_take.value)
             self.cache[(self.g_model.value, self.g_take.value)] = (self.wins, self.chain)
             self._info()
         self.redraw_view()
@@ -496,6 +559,16 @@ class Viewer:
     def items(self) -> list[tuple[int, int, int, np.ndarray, float, int]]:
         """(keyframe, window, index in window, pose, scale, colour tag) of every frame shown in the current view."""
         view, step = self.g_view.value, int(self.g_kstep.value)
+        if view == VIEWS[3]:
+            f = self.fused_dir(self.g_model.value, self.g_take.value) / "poses.npz"
+            if not f.exists():
+                return []
+            z = np.load(f)
+            out = []
+            for kf, T, sc in zip(z["keyframes"], z["c2w"], z["depth_scale"]):
+                k, j = self.own.get(int(kf), (0, 0))
+                out.append((int(kf), k, j, T, float(sc), 0))
+            return out[::step] if step > 1 else out
         if view == VIEWS[0]:
             out = [(f, k, j, self.chain.pose(self.wins[k], j), self.chain.S[k], k)
                    for f, (k, j) in sorted(self.own.items())]
@@ -514,6 +587,23 @@ class Viewer:
 
     def _window_md(self):
         view = self.g_view.value
+        if view == VIEWS[3]:
+            g = self.fused_dir(self.g_model.value, self.g_take.value) / "graph.json"
+            if not g.exists():
+                self.g_win_md.content = (f"_no fused map yet: run_ `make fuse MODEL={self.g_model.value} "
+                                         f"TAKE={self.g_take.value}`")
+                return
+            info = json.loads(g.read_text(encoding="utf-8"))
+            lb = [e for e in info["edges_before"] if e["kind"] == "loop"]
+            la = [e for e in info["edges_after"] if e["kind"] == "loop"]
+            txt = (f"**fused map**: {info['points']:,} points, voxel {info['voxel_m']} m, depth ≤ {info['zmax']}, "
+                   f"{info['keyframes']} keyframes  \n{len(info['closures'])} loop closures")
+            if lb:
+                txt += (f"; they disagreed by {np.median([e['trans'] for e in lb]):.2f} / "
+                        f"{np.median([e['rot_deg'] for e in lb]):.1f}° before the pose graph, "
+                        f"{np.median([e['trans'] for e in la]):.2f} / {np.median([e['rot_deg'] for e in la]):.1f}° after")
+            self.g_win_md.content = txt
+            return
         if view == VIEWS[0]:
             self.g_win_md.content = "_whole take: choose **one window** or **two windows** to inspect the batches_"
             return
@@ -544,6 +634,9 @@ class Viewer:
             return
         with self.lock:
             its = self.items()
+            if not its:
+                self._window_md()
+                return
             poses = np.stack([T for _, _, _, T, _, _ in its])
             ys = poses[:, :3, 1]                         # camera y axis = image down
             up = -ys.mean(0)
@@ -574,6 +667,8 @@ class Viewer:
         return im[..., ::-1]
 
     def redraw_points(self):
+        if self.g_view.value == VIEWS[3]:
+            return self._draw_fused()
         with self.lock:
             if not hasattr(self, "wins"):
                 return
@@ -584,7 +679,7 @@ class Viewer:
             for f, k, j, T, s, tag in self.items():
                 w = self.wins[k]
                 d = w.depth[j].astype(np.float32)
-                ok = (d > 0) & np.isfinite(d) & (d <= dmax / s)
+                ok = (d > 0) & np.isfinite(d) & (d <= dmax / s) & self.border(d.shape)
                 if pdrop > 0:
                     cf = w.conf[j].astype(np.float32)
                     ok &= cf >= np.percentile(cf, pdrop)
@@ -626,6 +721,26 @@ class Viewer:
                                               point_shape="rounded")
             self.g_info.content = self.g_info.content.split("  \npoints shown:")[0] + f"  \npoints shown: {len(pts):,}"
 
+    def _draw_fused(self):
+        f = self.fused_dir(self.g_model.value, self.g_take.value) / "fused.npz"
+        if not f.exists():
+            return
+        z = np.load(f)
+        pts = z["xyz"].astype(np.float32)
+        cmode = self.g_color.value
+        if cmode == "height":
+            h = pts @ self.up
+            col = turbo((h - np.percentile(h, 2)) / (np.ptp(np.percentile(h, [2, 98])) + 1e-9))
+        elif cmode in ("depth", "window"):                 # no per-point depth: weight (how well observed)
+            w = np.log1p(z["weight"])
+            col = turbo((w - w.min()) / (np.ptp(w) + 1e-9))
+        else:
+            col = z["rgb"]
+        self.pts, self.col = pts, col
+        self.server.scene.add_point_cloud("/map/points", pts, col, point_size=float(self.g_psize.value),
+                                          point_shape="rounded")
+        self.g_info.content = self.g_info.content.split("  \npoints shown:")[0] + f"  \npoints shown: {len(pts):,}"
+
     def _set_psize(self):
         if len(self.pts):
             self.server.scene.add_point_cloud("/map/points", self.pts, self.col, point_size=float(self.g_psize.value),
@@ -642,6 +757,8 @@ class Viewer:
         if not hasattr(self, "wins"):
             return
         its = self.items()
+        if not its:
+            return
         pair = self.g_view.value == VIEWS[2]
         cs = np.stack([T[:3, 3] for _, _, _, T, _, _ in its])
         if self.g_path.value and len(cs) > 1:
@@ -653,7 +770,7 @@ class Viewer:
             H = self.wins[0].depth.shape[1] if self.wins[0].depth is not None else 518
             fov = 2 * np.arctan(H / 2 / K[1, 1])
             scale = max(self.extent * 0.03, 0.03)
-            fstep = int(self.g_fstep.value) if self.g_view.value == VIEWS[0] else max(1, int(self.g_fstep.value) // 4)
+            fstep = int(self.g_fstep.value) if self.g_view.value in (VIEWS[0], VIEWS[3]) else max(1, int(self.g_fstep.value) // 4)
             for n in range(0, len(its), fstep):
                 f, k, j, T, s, tag = its[n]
                 img = None

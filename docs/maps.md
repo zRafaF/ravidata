@@ -91,6 +91,57 @@ With that, Pi3X's worst join went from 3.8 m / 64° to 0.09 m / 2.2° (indoor). 
 disagree between windows (few agreeing frames): their maps stay poor however they are joined. The joins accumulate
 drift over a whole course; a global fit (pose graph, or the tags) is the next step.
 
+### Global map on the PC: `make fuse` (`scripts/map_fuse.py`, no GPU, no pod rerun; all models and takes by default)
+
+1. Robust joins (above).
+2. **Loop closures**: keyframes of windows at least two apart and ≥ 20 s apart that look alike (thumbnail
+   correlation, then ORB matches), verified geometrically — keyframe A's matched pixels lifted to 3D with A's
+   depth give keyframe B's pose by PnP + RANSAC (≥ 60 inliers), the inliers' depth gives the scale; the best
+   closure per window pair is kept.
+3. **Pose graph**: one similarity per window (window 0 fixed), joins weighted by their agreeing keyframes,
+   closures by their inliers, Huber loss. With calibrated intrinsics a similarity per submap is enough; VGGT-SLAM
+   ([arXiv 2505.12549](https://arxiv.org/abs/2505.12549)) optimises on SL(4) because uncalibrated feed-forward
+   reconstructions carry a projective ambiguity; VGGT-Long ([arXiv 2507.16443](https://arxiv.org/abs/2507.16443))
+   chunks, aligns overlaps and closes loops much like this.
+3b. **ICP refinement**: every join and closure is checked densely — point-to-plane ICP between the two
+   windows' points as the graph places them (voxel-downsampled, normals from 16 neighbours, Huber weights,
+   shrinking match distance); a good fit (≥ 30 % overlap, RMS ≤ 2.5 voxels, correction ≤ 10 voxels / 10°) replaces
+   the edge, and the graph is solved again. Pi3X indoor: 45 of 69 edges refined (median correction 0.11 m /
+   1.1°); closures then disagree by 0.07 m / 0.7° (0.11 m / 1.1° without ICP); the doubled corridor walls merge.
+   `--no-icp` skips it.
+4. **Weighted TSDF**: sparse voxels (2 % of the median depth, ~3.5 cm indoors), truncation 4 voxels, each sample
+   weighted by (confidence / frame median) × (1 m / depth)²: near, confident data dominate; overlaps average instead
+   of piling up; voxels seen by ≥ 3 frames, on the zero crossing. The black border the undistortion left in every
+   keyframe (the "embossed" frame outlines) is masked out (valid-pixel mask from the calibration, eroded 3 px);
+   the viewer masks it too.
+
+Outputs per model and take in `derived/maps-v1/fused/<model>/<take>/`: `poses.npz` (per window similarity, per
+keyframe camera-to-world + depth scale: the optimised oracle poses for the analyses), `graph.json` (closures,
+residuals before / after, settings), `fused.npz` / `fused.ply`. In the viewer: *Show → fused map (TSDF)*, and
+*Chaining → pose graph (map_fuse)* for the whole-take / two-window views.
+
+First result, Pi3X indoor course (2026-11-14): 47 verified loop closures; they disagreed by 1.70 m / 8.4° with the
+plain chaining, 0.11 m / 1.1° after the pose graph. From above, the plain chaining shows the room several times,
+rotated (ghost walls); after the pose graph the room is one rectangle; the TSDF gives thin walls
+(`docs/figures/pi3x_indoor_topdown.png`). 116 s on 2 CPU cores.
+
+In the viewer, **View → Fuse this model + take (TSDF)** runs the same thing for the current model and take
+(2–3 min, progress in the panel) and shows the result. Point size goes up to 0.3 and the pixel stride down to 1
+for far, sparse scenes.
+
+### Static takes: monocular depth on the CPU (`make static-depth TAKE=static_pass1`)
+
+The camera does not move in the static takes, so no multi-view reconstruction is needed: `scripts/static_depth.py`
+runs a monocular depth model on the CPU (default Depth Anything V2 Metric Indoor Small via `transformers`; any
+`depth-estimation` model id) on a few frames per part (S0 / S1 / S2), on the same undistorted, tone-mapped frames
+as the pod, and grounds each depth map on the AprilTags: each tag located by solvePnP (IPPE_SQUARE, printed size),
+a 5 × 5 grid of true depths per tag, fitted by a scale (or scale + offset, `--fit affine`); per tag the error with
+all tags and leave-one-tag-out. Frames without tags (S0, the empty scene) take the take's median scale (the camera
+is still). Tags found in static_pass1 S1: 13 (1.29 m), 20 (1.83 m), 21 (1.97 m), 15 (3.75 m) — stable to 1 cm
+between frames. Outputs: `derived/static-depth-v1/<take>/` (`.npz` metric depth, `.jpg`, `.ply`, `summary.json`).
+`TAKE=all` = both passes + the pilot. Needs the static takes downloaded (`make data DATA_TAKES="static_pass1
+static_pass2 pilot_chairs"`) and `uv sync --group depth` (PyTorch CPU + transformers).
+
 Preliminary: these are self-consistency figures, not accuracy. The chained paths of the models still differ by
 1–2 m RMS over a whole course after a similarity fit (drift of the chaining). Accuracy needs the AprilTag check
 (floor tags 10 / 12 / 17 for scale, the others held out) — still to do.

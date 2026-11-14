@@ -1,8 +1,8 @@
 # RAVIDATA — every command of the project. Python is managed by uv (https://docs.astral.sh/uv/);
 # `make` and `git` are the only other things a machine needs (`apt-get install -y make` on a fresh pod).
 # Code: https://github.com/zRafaF/ravidata   Data: https://huggingface.co/datasets/DoninhaD/ravidata
-.PHONY: help install test rec rec-sim align pack calib targets data dataset dataset-upload \
-        maps viz pod pod-test pod-status pod-watch pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
+.PHONY: help install test rec rec-sim align pack calib targets data data-all dataset dataset-upload \
+        maps fuse static-depth viz pod pod-test pod-status pod-watch pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
 
 HF_REPO ?= DoninhaD/ravidata
 TAKES   ?= indoor_course outdoor_course
@@ -22,7 +22,8 @@ help:
 	@echo ""
 	@echo "  make install          Python env (uv sync; installs uv first if missing)"
 	@echo "  make test             unit tests"
-	@echo "  make data             download the dataset to data/ravidata (DATA_TAKES='a b' for some takes only)"
+	@echo "  make data             download the recordings to data/ravidata (all takes; DATA_TAKES='a b' for some)"
+	@echo "  make data-all         the whole dataset repository, derived maps included (~5 GB)"
 	@echo ""
 	@echo "  recording (radar MRS6130-P1812 over SPI + phone):"
 	@echo "  make rec / rec-sim    recorder GUI (Simple tab = guided takes) / with the simulator"
@@ -47,6 +48,10 @@ help:
 	@echo "  back on your PC (CPU):"
 	@echo "  make maps             download the pod's maps (derived/maps-$(TAG)) + the course videos to data/ravidata,"
 	@echo "                        and re-make the exact keyframe images the models saw (for colours)"
+	@echo "  make fuse             global map on the PC: loop closures + pose graph + weighted TSDF"
+	@echo "                        every model and take by default (~2-3 min each, ~20 min in all);"
+	@echo "                        MODEL=pi3x TAKE=indoor_course for one"
+	@echo "  make static-depth TAKE=static_pass1   CPU depth model per frame of a static take, scaled by the AprilTags"
 	@echo "  make viz              3D viewer of the maps in the browser: whole take, one window, two windows,"
 	@echo "                        compare models, measure (VIZ_ARGS=\"--model vggt --take outdoor_course\"): docs/maps.md"
 
@@ -78,9 +83,12 @@ targets: install
 	$(UV) run ravidata print-targets
 
 DATA_TAKES ?=
-data: install
-	$(UV) run hf download $(HF_REPO) --repo-type dataset --local-dir data/ravidata \
-	  $(if $(DATA_TAKES),$(foreach t,$(DATA_TAKES),--include "takes/$(t)/*") --include "calibration/*" --include "*.json" --include "README.md",)
+data:                                  # the recordings (all takes, calibration, metadata), without derived/
+	uv run hf download $(HF_REPO) --repo-type dataset --local-dir data/ravidata \
+	  $(if $(DATA_TAKES),$(foreach t,$(DATA_TAKES),--include "takes/$(t)/*") --include "calibration/*" --include "*.json" --include "README.md",--exclude "derived/*")
+
+data-all:                              # the whole dataset repository: recordings + derived/ (maps, ~4 GB more)
+	uv run hf download $(HF_REPO) --repo-type dataset --local-dir data/ravidata
 
 MAPS := data/ravidata/derived/maps-$(TAG)
 maps: install
@@ -93,6 +101,15 @@ maps: install
 	      --from-json "$(MAPS)/frames_$$t.json" || exit 1; \
 	  fi; \
 	done
+
+MODEL ?= all
+TAKE  ?= all
+fuse:                                  # pose graph + ICP + weighted TSDF on the PC (no GPU), every model and take
+	uv run --group viz python scripts/map_fuse.py --model $(MODEL) --take $(TAKE)
+
+PER_PART ?= 5
+static-depth:                          # monocular metric depth of a static take on the CPU, grounded on the tags
+	uv run --group depth python scripts/static_depth.py --take $(TAKE) --per-part $(PER_PART)
 
 VIZ_ARGS ?=
 viz:                                   # plain `uv`: also works from PowerShell with GNU make
