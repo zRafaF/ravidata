@@ -25,7 +25,8 @@ repository holds the tools to record, align and analyse the data, and to rebuild
 | record | PC + radar + phone | `make rec` |
 | build the public dataset (owners) | PC, CPU | `make dataset`, `make dataset-upload` |
 | **maps (the only GPU step)** | rented GPU pod | `make pod` |
-| analysis and scoring | PC, CPU | `make maps`, `make fuse`, `make analysis-quick`, `make analysis`, `make plots` |
+| global maps, still-take depth | PC, CPU | `make maps`, `make fuse`, `make static-depth TAKE=all` (results are on the dataset) |
+| radar analyses | PC, CPU | `make data-analysis`, `make analysis-quick`, `make analysis`, `make plots`, `make report` |
 
 The pod does nothing but turn video into maps: it downloads only the two carried videos and the calibration, runs
 the models, uploads the results to the dataset and **stops itself**. Everything that only needs a CPU happens on
@@ -66,9 +67,11 @@ in `metrics/`: GPU samples every second during every check and run (utilisation,
 clock), the check attempts (including the window sizes that ran out of memory), stage times, the machine
 (`nvidia-smi -q`, CPU, RAM, disk) and the installed packages of every model environment.
 
-The comparison, on CPU: AprilTag positions and sizes against their known size, start/end loop closure, camera
-rotation against the phone gyroscope, and range to the tags against the radar. The scoring tool is being
-written and will be added here as a `make` target.
+On the PC, `make fuse` joins the windows into one map per model and take (loop closures, pose graph, ICP, TSDF);
+the radar ground truth uses its trajectory. The metric scale of every window comes from the floor tags (table
+`map_scale` of the analyses). `make viz` compares the models' camera paths and measures distances in the maps. A
+systematic accuracy check of the maps (held-out tags, radar as altimeter) has been done for the thesis but is not
+yet a `make` target. Details: [docs/maps.md](docs/maps.md).
 
 ## Detection baselines
 
@@ -76,10 +79,51 @@ written and will be added here as a `make` target.
 along range, both reporting the nearest return; `make rec` shows them live.
 
 `analysis/` scores these and more (threshold, CA / GO / SO / OS-CFAR, range-Doppler CFAR, CFAR + DBSCAN, a
-log-odds occupancy grid alone / moved with the IMU / moved with the map trajectory) against ground truth from the
-AprilTags and the feed-forward maps, tunes every family with a multi-objective search, measures how well one
-setting generalises across scenes, characterises the sensor and checks a fixed-point CORDIC against float64.
-Steps write tables; figures are drawn from the tables. See [docs/analysis.md](docs/analysis.md).
+log-odds occupancy grid alone / moved with the IMU / moved with the map trajectory, a range-azimuth grid with
+Doppler layers) against ground truth from the AprilTags and the feed-forward maps, tunes every family with a
+multi-objective search, measures how well one setting generalises across scenes and characterises the sensor.
+Steps write tables; figures are drawn from the tables. See
+[docs/analysis.md](docs/analysis.md).
+
+## Results
+
+| folder | status |
+|---|---|
+| `results/analysis-v2` | **current.** Indoor_course time alignment corrected, range / angle calibration from the walking person, balanced arc metric and its constant-answer floor. Run so far: tags, extrinsic, truth, sensor, eval, floor, and the arc-view tuning (pooled, 80 trials, five families). Not yet: ablation, plots, story, report, the plane objective, the strict protocol. |
+| `results/analysis-v1` | superseded, kept as a record (its `FINDINGS.md` and `REPORT.md` are marked so). |
+
+What changed and why: [CHANGELOG.md](CHANGELOG.md). Each folder's `runs.jsonl` lists every step that wrote to it,
+with its settings and duration.
+
+## Reproducing the results
+
+CPU only; about 1 h for the steps below on a 4-core PC (`WORKERS=4`), plus the downloads (~2 GB).
+
+```bash
+git clone https://github.com/zRafaF/ravidata && cd ravidata
+make install          # uv + the Python environment (uv.lock)
+make test             # unit tests (no data needed)
+make data-analysis    # recordings, Pi3X maps, fused poses, still-take depth -> data/ravidata
+make analysis-quick   # every step on a few seconds per recording -> results/analysis-v2-quick (minutes)
+```
+
+Then the full run, with the settings of `results/analysis-v2` (writes into it; set `RAVIDATA_RUN=<name>` to write
+to `results/<name>` instead and compare):
+
+```bash
+make an-tags an-extrinsic an-truth an-sensor an-eval
+make an-opt an-eval-tuned OBJECTIVE=arc TRIALS=80 FAMILIES="thr ca_cfar rd_cfar grid grid_doppler"
+make an-floor plots report
+```
+
+The Optuna studies in `results/<run>/optuna/` are resumed, not restarted: with the published studies present,
+`an-opt` only rebuilds the tables. To redo the search from scratch, use a new `RAVIDATA_RUN`. A re-run of `an-eval`
+also scores `grid_doppler`, which the published default tables lack (the family was added after that step ran).
+`make analysis` runs
+every step with the defaults (all families, both objectives, 80 trials: several hours). The analysis needs dataset
+**v1.1** or newer (it carries the indoor_course time-alignment fix in `take.json`) and stops with a message on an
+older local copy (`make data` updates it). The maps, fused poses and still-take depth must be the published ones
+(`make fuse` on another machine does not give bit-identical poses).
 
 ## Using the dataset (any PC)
 
@@ -91,7 +135,7 @@ git clone https://github.com/zRafaF/ravidata && cd ravidata
 make help        # lists every command
 make test        # optional: installs the Python env and runs the unit tests (checks the install works)
 make data        # the recordings -> data/ravidata   (DATA_TAKES="indoor_course" for one take)
-make data-all    # everything, the derived maps included (~5 GB)
+make data-all    # everything, the derived maps included (~4.5 GB)
 ```
 
 ## AprilTags

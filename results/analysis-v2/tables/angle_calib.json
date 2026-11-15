@@ -1,0 +1,14 @@
+{
+ "az": {
+  "sign": 1.0,
+  "offset_rad": 2.9854988166204715,
+  "R": 0.9637639219777913
+ },
+ "el": {
+  "sign": 1.0,
+  "offset_rad": 0.2456171539150561,
+  "R": 0.8746721640404034
+ },
+ "method": "moving person (mean-removed cube)",
+ "note": "angle = arcsin(wrap(sign*phase - offset) / (2 pi d/lambda)); the elevation targets span only a few degrees and a standing person is tall: the elevation offset is approximate"
+}

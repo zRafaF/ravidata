@@ -434,47 +434,6 @@ def fig_universality(plt, pdf):
         save(fig, f"opt_price_of_universality_{prot}_{ob}", pdf)
 
 
-# ------------------------------------------------------------------------------------------------ CORDIC
-def fig_cordic(plt, pdf):
-    E = C.load_table("cordic_error", required=False)
-    if E is None or not len(E):
-        return
-    fig, axs = plt.subplots(1, 3, figsize=(13, 3.4))
-    k = 0
-    for (op, q), g in E[E.op != "atan2_dynamic"].groupby(["op", "q"]):
-        axs[0].semilogy(g.iterations, g.max_err, marker="o", ms=4, color=SERIES[k], label=f"{op} {q}")
-        k += 1
-    axs[0].set_xlabel("iterations"); axs[0].set_ylabel("max |error|"); axs[0].legend(fontsize=7)
-    axs[0].set_title("CORDIC vs float64")
-    Dn = E[E.op == "atan2_dynamic"]
-    for k, (q, g) in enumerate(Dn.groupby("q")):
-        axs[1].semilogy(g.rel_level_db, g.max_err_deg, marker="o", ms=4, color=SERIES[k], label=q)
-    axs[1].set_xlabel("input level below full scale (dB)"); axs[1].set_ylabel("max phase error (deg)")
-    axs[1].invert_xaxis(); axs[1].legend(fontsize=7); axs[1].set_title("Phase vs input level")
-    G = C.load_table("cordic_grid", required=False)
-    if G is not None and len(G):
-        for k, (q, g) in enumerate(G.groupby("q")):
-            m = g.groupby("iterations").same_output_frac.mean()
-            axs[2].plot(m.index, m, marker="o", ms=4, color=SERIES[k], label=q)
-        axs[2].set_xlabel("iterations"); axs[2].set_ylabel("frames with identical grid output")
-        axs[2].set_title("Occupancy grid: CORDIC vs float64"); axs[2].legend(fontsize=7)
-    save(fig, "cordic_accuracy", pdf)
-    P = C.load_table("cordic_phase", required=False)
-    if P is not None and len(P):
-        g = P.groupby(["method", "q", "iterations"]).p99_err_deg.median().reset_index()
-        fig, ax = plt.subplots(figsize=(7, 3.4))
-        k = 0
-        for (m, q), h in g[g.iterations > 0].groupby(["method", "q"]):
-            ax.semilogy(h.iterations, h.p99_err_deg, marker="o", ms=4, color=SERIES[k], label=f"{m} {q}")
-            k += 1
-        for m, h in g[g.iterations == 0].groupby("method"):
-            ax.axhline(h.p99_err_deg.iloc[0], color=SERIES[k % 8], lw=1, ls="--", label=m)
-            k += 1
-        ax.set_xlabel("CORDIC iterations"); ax.set_ylabel("99th pct phase error (deg)")
-        ax.set_title("Interferometric phase of real radar returns vs float64"); ax.legend(fontsize=6)
-        save(fig, "cordic_phase_real_data", pdf)
-
-
 # ------------------------------------------------------------------------------------------------ paper candidates
 def fig_operating_curves(plt, pdf):
     """Found (nearest obstacle within 0.25 m, any direction) vs early alarms: every optimiser trial of every family
@@ -670,7 +629,7 @@ def fig_pitch(plt, pdf):
 PAPER = [fig_operating_curves, fig_outcome_vs_distance, fig_floor_margin, fig_ablation, fig_noise, fig_fp_causes]
 FIGS = [fig_noise, fig_targets, fig_timing, fig_calib, fig_sync, fig_truth, fig_eval_bars, fig_default_vs_tuned,
         fig_eval_env, fig_rings,
-        fig_fp_causes, fig_pr, fig_pd_range, fig_arc, fig_cost, fig_pareto, fig_universality, fig_pitch, fig_cordic]
+        fig_fp_causes, fig_pr, fig_pd_range, fig_arc, fig_cost, fig_pareto, fig_universality, fig_pitch]
 
 
 def run(only=None, pdf=False, all_figs=False):

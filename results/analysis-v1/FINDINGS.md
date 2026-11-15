@@ -1,5 +1,10 @@
 # RAVIDATA radar analysis v1: findings
 
+> **Superseded (2026-11-15).** These are the results of the first version of the analysis. They are kept as a
+> record and not edited. Known problems: `indoor_course` was 3 s out of sync, the azimuth calibration was mirrored,
+> the range bias was +0.117 m instead of about 0, and the arc metric had no skill floor. Current results:
+> `results/analysis-v2`; what changed: `CHANGELOG.md` at the repository root.
+
 Status: second full run (2026-11-14, commit 1a35898): new truth (obstacle = anything more than 0.12 m above the
 floor), eval, eval-tuned, ablation and the `floor` step. The optimisation trials are from the first run (commit
 3a2478d, older truth); their best settings were re-evaluated on the new truth.

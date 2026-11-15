@@ -105,7 +105,8 @@ logs/                        every log of the pod
 metrics/                     see maps.md "Running metrics"
 ```
 
-On the PC: `make maps` downloads them to `data/ravidata/derived/maps-v1/`.
+On the PC: `make maps` downloads them to `data/ravidata/derived/maps-v1/`. `fused/` (the global maps of
+`make fuse`) is made on the PC and uploaded next to them; the pod does not write it.
 
 ## 7. Troubleshooting (what happened on the first pod)
 

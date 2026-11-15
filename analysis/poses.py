@@ -57,7 +57,7 @@ def oracle_trajectory(take: str, model: str = "pi3x"):
         from .maps import TakeMaps
         try:
             tm = TakeMaps(take, model)
-            tags = C.load_table("tags", required=False)
+            tags = C.load_tags(required=False)
             tm.fit_scale(tags)
             r = tm.trajectory()
             tr = None if r is None else (r[0], r[1])

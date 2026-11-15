@@ -27,7 +27,8 @@ from . import score as SC
 SUFF = ["frames", "n_truth", "tp10", "tp25", "tp50", "tp100", "frames_c", "n_truth_c", "n_det_c", "tpc10", "tpc25",
         "tpc50", "tpc100", "gospa_sum", "n_truth_r", "n_det_r",
         "rtp50", "near_frames", "near_hit", "near_early", "cor_frames", "cor_hit", "cor_fa", "cor_free",
-        "arc_frames", "arc_cov", "arc_hit", "arc_early", "obj_frames", "obj_n", "obj_hit", "obj_other"]
+        "arc_frames", "arc_cov", "arc_hit", "arc_early",
+        *[f"arc_n{i}" for i in range(5)], *[f"arc_h{i}" for i in range(5)], "obj_frames", "obj_n", "obj_hit", "obj_other"]
 
 
 def suff(Fr) -> dict:
@@ -44,6 +45,9 @@ def suff(Fr) -> dict:
     arc = dict(arc_frames=int(a_ok.sum()), arc_cov=int(cov.sum()),
                arc_hit=int((a_b & (np.abs(ad - at) <= 0.25)).sum()),
                arc_early=int((cov & np.isfinite(ad) & (~a_ok | (ad < at - 0.25))).sum()))
+    from .score import arc_balanced
+    _, hb, nb = arc_balanced(at, ad)
+    arc.update({f"arc_n{i}": float(nb[i]) for i in range(5)} | {f"arc_h{i}": float(hb[i]) for i in range(5)})
     Fo = F[F.obj_n > 0] if "obj_n" in F else F.iloc[:0]
     arc.update(obj_frames=len(Fo), obj_n=float(Fo.obj_n.sum()) if len(Fo) else 0.0,
                obj_hit=float(Fo.obj_hit.sum()) if len(Fo) else 0.0, obj_other=float(Fo.obj_other.sum()) if len(Fo) else 0.0)
@@ -79,6 +83,10 @@ def metrics(s: dict) -> dict:
     out["arc_early_rate"] = s["arc_early"] / s["arc_cov"] if s["arc_cov"] else np.nan
     # found AND not early (a pd - early difference would prefer 'report nothing' over any noisy detector)
     out["arc_score"] = out["arc_pd"] * (1 - out["arc_early_rate"])
+    rb = [s[f"arc_h{i}"] / s[f"arc_n{i}"] for i in range(5) if s[f"arc_n{i}"] > 0]
+    out["arc_pd_bal"] = float(np.mean(rb)) if rb else np.nan     # balanced over truth-distance classes (score.py)
+    out["arc_miss_bal"] = 1 - out["arc_pd_bal"]
+    out["arc_score_bal"] = out["arc_pd_bal"] * (1 - out["arc_early_rate"])
     out["obj_pd"] = s["obj_hit"] / s["obj_n"] if s["obj_n"] else np.nan
     out["obj_other_per_frame"] = s["obj_other"] / s["obj_frames"] if s["obj_frames"] else np.nan
     return out
@@ -127,7 +135,7 @@ def storage_url(name: str) -> str:
 OBJECTIVES = {
     # name: (the two minimised objectives, {selection name: (metric, sign: -1 = higher is better)})
     "plane": (("miss_50", "fp_per_frame_50"), {"tuned_f1": ("f1_50", -1), "tuned_gospa": ("gospa", 1)}),
-    "arc": (("arc_miss", "arc_early_rate"), {"tuned_arc": ("arc_score", -1)}),
+    "arc": (("arc_miss_bal", "arc_early_rate"), {"tuned_arc": ("arc_score_bal", -1)}),
 }
 
 
@@ -315,7 +323,7 @@ def run(takes=None, families=None, n_trials=150, protocol="strict", workers=4, s
                 trows.append(dict(study=f"{fam}__{objective}__pooled", family=fam, protocol=protocol,
                                   objective=objective, split="all", fold="all", trial=t.number,
                                   **{k: m[k] for k in ("miss_50", "fp_per_frame_50", "arc_miss", "arc_early_rate",
-                                                       "gospa", "f1_50", "arc_pd")},
+                                                       "gospa", "f1_50", "arc_pd", "arc_pd_bal", "arc_miss_bal")},
                                   ms_per_frame=t.user_attrs.get("ms_per_frame"), params=t.user_attrs.get("params")))
             if trs:
                 best[fam] = json.loads(trs[select(trs, fam_takes, next(iter(SELECT)), objective)]

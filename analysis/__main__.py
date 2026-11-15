@@ -1,7 +1,7 @@
 """python -m analysis <step> [options]   (make an-<step> / make analysis / make analysis-quick)
 
-Steps, in the order `all` runs them (each writes tables under results/analysis-v1/tables;
---quick writes to results/analysis-quick and uses a few seconds of every recording):
+Steps, in the order `all` runs them (each writes tables under results/analysis-v2/tables;
+--quick writes to results/analysis-v2-quick and uses a few seconds of every recording):
 
   tags        GT2  AprilTag poses in the videos                          -> tags
   extrinsic   GT3  radar-camera offset, range bias, angle calibration     -> calib_targets, extrinsic.json, angle_calib.json
@@ -12,7 +12,6 @@ Steps, in the order `all` runs them (each writes tables under results/analysis-v
   opt         F3-F4 multi-objective tuning + generalisation folds       -> opt_trials_*, opt_results_*, opt_best_params_*.json
   eval-tuned       every family with the tuned settings                 -> eval_*_tuned
   floor            where the early alarms come from (floor in beam, phantom) -> floor_margin, floor_pitch, phantom
-  cordic      E1   fixed-point CORDIC vs float64 (not part of `all`)    -> cordic_error, cordic_phase, cordic_grid
   plots            figures from the tables only                         -> figures/*.png
   story            explanatory figures (truth, range-time maps)         -> figures/story/*.png
 """
@@ -25,9 +24,9 @@ import time
 
 from . import common as C
 
-STEPS = ["tags", "extrinsic", "truth", "sensor", "eval", "ablation", "opt", "eval-tuned", "floor", "cordic", "plots",
+STEPS = ["tags", "extrinsic", "truth", "sensor", "eval", "ablation", "opt", "eval-tuned", "floor", "plots",
          "story", "report"]
-ALL = [s for s in STEPS if s != "cordic"]            # CORDIC is done later (on the C code); `cordic` still runs alone
+ALL = list(STEPS)
 
 
 def main(argv=None):
@@ -35,7 +34,7 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("step", choices=STEPS + ["all"])
     ap.add_argument("--from", dest="from_step", choices=STEPS, help="all: start at this step (earlier ones done)")
-    ap.add_argument("--quick", action="store_true", help="a few seconds per recording, output to analysis-quick")
+    ap.add_argument("--quick", action="store_true", help="a few seconds per recording, output to analysis-v2-quick")
     ap.add_argument("--takes", nargs="*", help="default: all takes")
     ap.add_argument("--families", nargs="*", help="pipeline families (default: all)")
     ap.add_argument("--workers", type=int, default=4)
@@ -113,9 +112,6 @@ def main(argv=None):
         elif st == "floor":
             from . import floor
             floor.run(n_max=40 if a.quick else 200)
-        elif st == "cordic":
-            from . import cordic
-            cordic.run(a.takes, max_recs=4 if a.quick else None)
         elif st == "plots":
             from . import plots
             plots.run(a.only, a.pdf, all_figs=a.all_figs)

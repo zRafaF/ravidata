@@ -1,0 +1,205 @@
+{
+ "takes": [
+  {
+   "take": "pilot_chairs",
+   "image": "f03_pilot_chairs",
+   "image_px": [
+    360,
+    360
+   ],
+   "frame_at_video_s": 51.0,
+   "kind": "static",
+   "place": "closed",
+   "recordings": 5,
+   "radar_frames": 3089,
+   "video_s": 203.69095555555555,
+   "configs": [
+    {
+     "name": "tcc-1d-40mm",
+     "dim": "1D",
+     "fps": null,
+     "recordings": 3,
+     "frames": 2693
+    },
+    {
+     "name": "tcc-2d-40mm",
+     "dim": "2D",
+     "fps": null,
+     "recordings": 2,
+     "frames": 396
+    }
+   ],
+   "truth_source": [
+    "static-depth:depthpro+tags"
+   ],
+   "truth": "depth"
+  },
+  {
+   "take": "static_pass1",
+   "image": "f03_static_pass1",
+   "image_px": [
+    360,
+    360
+   ],
+   "frame_at_video_s": 243.0,
+   "kind": "static",
+   "place": "closed",
+   "recordings": 9,
+   "radar_frames": 6344,
+   "video_s": 441.7095,
+   "configs": [
+    {
+     "name": "tcc-1d-40mm",
+     "dim": "1D",
+     "fps": null,
+     "recordings": 3,
+     "frames": 3384
+    },
+    {
+     "name": "tcc-2d-40mm-12fps",
+     "dim": "2D",
+     "fps": 12,
+     "recordings": 3,
+     "frames": 1069
+    },
+    {
+     "name": "tcc-2d-40mm",
+     "dim": "2D",
+     "fps": null,
+     "recordings": 3,
+     "frames": 1891
+    }
+   ],
+   "truth_source": [
+    "static-depth:depthpro+tags"
+   ],
+   "truth": "depth"
+  },
+  {
+   "take": "static_pass2",
+   "image": "f03_static_pass2",
+   "image_px": [
+    360,
+    360
+   ],
+   "frame_at_video_s": 116.0,
+   "kind": "static",
+   "place": "closed",
+   "recordings": 9,
+   "radar_frames": 5053,
+   "video_s": 332.1326222222222,
+   "configs": [
+    {
+     "name": "tcc-1d-40mm",
+     "dim": "1D",
+     "fps": null,
+     "recordings": 3,
+     "frames": 2807
+    },
+    {
+     "name": "tcc-2d-40mm-12fps",
+     "dim": "2D",
+     "fps": 12,
+     "recordings": 3,
+     "frames": 863
+    },
+    {
+     "name": "tcc-2d-40mm",
+     "dim": "2D",
+     "fps": null,
+     "recordings": 3,
+     "frames": 1383
+    }
+   ],
+   "truth_source": [
+    "static-depth:depthpro+tags"
+   ],
+   "truth": "depth"
+  },
+  {
+   "take": "indoor_course",
+   "image": "f03_indoor_course",
+   "image_px": [
+    360,
+    360
+   ],
+   "frame_at_video_s": 95.0,
+   "kind": "carried",
+   "place": "closed",
+   "recordings": 3,
+   "radar_frames": 5106,
+   "video_s": 272.33636666666666,
+   "configs": [
+    {
+     "name": "tcc-1d-40mm",
+     "dim": "1D",
+     "fps": null,
+     "recordings": 1,
+     "frames": 3002
+    },
+    {
+     "name": "tcc-2d-40mm-12fps",
+     "dim": "2D",
+     "fps": 12,
+     "recordings": 1,
+     "frames": 835
+    },
+    {
+     "name": "tcc-2d-40mm",
+     "dim": "2D",
+     "fps": null,
+     "recordings": 1,
+     "frames": 1269
+    }
+   ],
+   "truth_source": [
+    "map:pi3x"
+   ],
+   "truth": "map"
+  },
+  {
+   "take": "outdoor_course",
+   "image": "f03_outdoor_course",
+   "image_px": [
+    360,
+    360
+   ],
+   "frame_at_video_s": 203.0,
+   "kind": "carried",
+   "place": "open",
+   "recordings": 3,
+   "radar_frames": 5801,
+   "video_s": 312.6392333333333,
+   "configs": [
+    {
+     "name": "tcc-1d-40mm",
+     "dim": "1D",
+     "fps": null,
+     "recordings": 1,
+     "frames": 3344
+    },
+    {
+     "name": "tcc-2d-40mm-12fps",
+     "dim": "2D",
+     "fps": 12,
+     "recordings": 1,
+     "frames": 920
+    },
+    {
+     "name": "tcc-2d-40mm",
+     "dim": "2D",
+     "fps": null,
+     "recordings": 1,
+     "frames": 1537
+    }
+   ],
+   "truth_source": [
+    "map:pi3x"
+   ],
+   "truth": "map"
+  }
+ ],
+ "total_recordings": 29,
+ "total_radar_frames": 25393,
+ "total_video_s": 1562.5086777777776
+}

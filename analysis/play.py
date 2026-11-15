@@ -8,7 +8,7 @@ projected into it; (right, top) bird's-eye view of the radar's range-azimuth pla
 this frame (2-element Bartlett beam over the azimuth pair, dB over the frame's noise; no accumulation), the truth
 (nearest obstacle per 4 deg sector, white), the camera FOV and the walking corridor, and the detections of each
 family; (right, bottom) the range profile with the CFAR threshold of the first CFAR family, the detections and the
-truth ranges. Output: results/analysis-v1/videos/<recording>_<start>s_<families>.mp4 (and .gif with --gif)."""
+truth ranges. Output: results/analysis-v2/videos/<recording>_<start>s_<families>.mp4 (and .gif with --gif)."""
 
 from __future__ import annotations
 

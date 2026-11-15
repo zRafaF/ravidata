@@ -109,7 +109,7 @@ def sync_rows(rec, lags=np.arange(-2.5, 2.5001, 0.04)):
 def run(takes=None):
     import pandas as pd
     takes = C.available_takes(takes)
-    tags = C.load_table("tags", required=False)
+    tags = C.load_tags(required=False)
     nrows, trows, tim, srows = [], [], [], []
     for take in takes:
         for rec in C.bar(C.recordings(take), desc=f"sensor {take}", unit="rec"):

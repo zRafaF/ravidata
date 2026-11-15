@@ -1,0 +1,13 @@
+{
+ "t_rc": [
+  0.0,
+  0.0,
+  0.0
+ ],
+ "range_bias_m": -0.010987565258197218,
+ "n_targets": 859,
+ "method": "moving person (mean-removed cube)",
+ "range_resid_rms_m": 0.05640504433222231,
+ "range_resid_mad_m": 0.03600708662134067,
+ "note": "radar origin in camera coordinates (x right, y down, z forward); r_meas = |p - t_rc| + b"
+}

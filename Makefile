@@ -1,9 +1,9 @@
 # RAVIDATA — every command of the project. Python is managed by uv (https://docs.astral.sh/uv/);
 # `make` and `git` are the only other things a machine needs (`apt-get install -y make` on a fresh pod).
 # Code: https://github.com/zRafaF/ravidata   Data: https://huggingface.co/datasets/DoninhaD/ravidata
-.PHONY: help install test rec rec-sim align pack calib targets data data-all dataset dataset-upload \
-        maps fuse static-depth static-depth-refit static-depth-upload viz analysis analysis-quick plots an-tags an-extrinsic an-truth \
-        an-sensor an-eval an-opt an-eval-tuned an-floor an-cordic an-ablation story report play pod pod-test pod-status pod-watch pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
+.PHONY: help install test rec rec-sim align pack calib targets data data-all data-analysis dataset dataset-upload hf-status hf-patch hf-release \
+        maps fuse static-depth static-depth-refit viz analysis analysis-quick plots an-tags an-extrinsic an-truth \
+        an-sensor an-eval an-opt an-eval-tuned an-floor an-ablation story report play pod pod-test pod-status pod-watch pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
 
 HF_REPO ?= DoninhaD/ravidata
 TAKES   ?= indoor_course outdoor_course
@@ -24,7 +24,8 @@ help:
 	@echo "  make install          Python env (uv sync; installs uv first if missing)"
 	@echo "  make test             unit tests"
 	@echo "  make data             download the recordings to data/ravidata (all takes; DATA_TAKES='a b' for some)"
-	@echo "  make data-all         the whole dataset repository, derived maps included (~5 GB)"
+	@echo "  make data-all         the whole dataset repository, derived maps included (~4.5 GB)"
+	@echo "  make data-analysis    what the radar analyses read: recordings + Pi3X maps + fused poses + static depth"
 	@echo ""
 	@echo "  recording (radar MRS6130-P1812 over SPI + phone):"
 	@echo "  make rec / rec-sim    recorder GUI (Simple tab = guided takes) / with the simulator"
@@ -32,6 +33,12 @@ help:
 	@echo "  make align / pack FOLDER=...   align phone video + IMU with the radar / export a pack"
 	@echo "  make targets          printable AprilTags + checkerboard (docs/protocols/targets)"
 	@echo "  make dataset          (dataset owners) blur faces + build the HF dataset from the raw recordings"
+	@echo "  make hf-status        (dataset owners) read-only: what differs between data/ravidata and Hugging Face"
+	@echo "  make hf-patch         (dataset owners) bring data/ravidata's take.json + card to the code's dataset version"
+	@echo "                        (sync corrections in scripts/hf_dataset.py); no upload"
+	@echo "  make hf-release       (dataset owners) hf-patch, then tag the hub's current state, upload the changed"
+	@echo "                        metadata + derived/maps-v1/fused + derived/static-depth-v1, tag the new version"
+	@echo "                        (needs \`uv run hf auth login\` with a write token; HF_RELEASE_ARGS= for a dry run)"
 	@echo ""
 	@echo "  GPU pod, maps only (git clone https://github.com/zRafaF/ravidata, then only):"
 	@echo "  make pod-test         first: install every model and try it on one window of frames (~30 min);"
@@ -55,23 +62,22 @@ help:
 	@echo "  make static-depth TAKE=all   CPU depth model per frame of the static takes, scaled by the AprilTags"
 	@echo "                        DEPTH_MODEL=depthpro (default; da2l, da2s or a transformers id); PER_PART=5"
 	@echo "  make static-depth-refit TAKE=all   re-fit the saved depth maps on the tags (FIT=auto|scale|affine, no model)"
-	@echo "  make static-depth-upload   put derived/static-depth-v1 on the HF dataset (after hf auth login)"
 	@echo "  make viz              3D viewer of the maps in the browser: whole take, one window, two windows,"
 	@echo "                        compare models, measure (VIZ_ARGS=\"--model vggt --take outdoor_course\"): docs/maps.md"
 	@echo ""
-	@echo "  radar analyses (CPU; tables, figures, videos in results/analysis-v1, kept in git): docs/analysis.md"
+	@echo "  radar analyses (CPU; tables, figures, videos in results/analysis-v2, kept in git): docs/analysis.md"
 	@echo "  make analysis-quick   every step on a few seconds of each recording (~6 min), + plots, to"
-	@echo "                        results/analysis-quick: run this first after any change"
-	@echo "  make analysis         every step but CORDIC, full data, in order (hours: see docs/analysis.md);"
+	@echo "                        results/analysis-v2-quick: run this first after any change"
+	@echo "  make analysis         every step, full data, in order (hours: see docs/analysis.md);"
 	@echo "                        FROM=truth starts there (the steps before it already done)"
-	@echo "  make an-tags an-extrinsic an-truth an-sensor an-eval an-ablation an-opt an-eval-tuned an-floor an-cordic"
+	@echo "  make an-tags an-extrinsic an-truth an-sensor an-eval an-ablation an-opt an-eval-tuned an-floor"
 	@echo "                        one step (QUICK=1 for its quick version)"
 	@echo "  make plots            figures from the existing tables only (seconds); QUICK=1 for the quick tables"
 	@echo "  make story            explanatory figures (how the truth is built, radar range-time maps with the truth)"
-	@echo "  make report           results/analysis-v1/REPORT.md: every number as Markdown tables"
+	@echo "  make report           results/analysis-v2/REPORT.md: every number as Markdown tables"
 	@echo "  make play REC=indoor_course/01_D1_tcc-1d-40mm START=20 SECONDS=15 PLAY_FAMILIES=\"ca_cfar grid\""
 	@echo "                        video of one recording: camera + instantaneous radar heatmap + detections + truth"
-	@echo "                        (PLAY_ARGS=\"--gif --bg empty --params tuned_pooled\"); results/analysis-v1/videos/"
+	@echo "                        (PLAY_ARGS=\"--gif --bg empty --params tuned_pooled\"); results/analysis-v2/videos/"
 	@echo "  variables: AN_TAKES='static_pass1 ...' FAMILIES='thr grid ...' TRIALS=$(TRIALS) PROTOCOL=$(PROTOCOL)"
 	@echo "             (strict | pooled | both) WORKERS=$(WORKERS) TAG_STEP=$(TAG_STEP) MAP_MODEL=$(MAP_MODEL)"
 
@@ -110,6 +116,13 @@ data:                                  # the recordings (all takes, calibration,
 data-all:                              # the whole dataset repository: recordings + derived/ (maps, ~4 GB more)
 	uv run hf download $(HF_REPO) --repo-type dataset --local-dir data/ravidata
 
+data-analysis:                         # inputs of `make analysis`: recordings + MAP_MODEL maps + fused poses + static depth
+	uv run hf download $(HF_REPO) --repo-type dataset --local-dir data/ravidata --exclude "derived/*" \
+	  --include "takes/*" --include "calibration/*" --include "*.json" --include "README.md"
+	uv run hf download $(HF_REPO) --repo-type dataset --local-dir data/ravidata \
+	  --include "derived/maps-$(TAG)/frames_*.json" --include "derived/maps-$(TAG)/$(MAP_MODEL)/*" \
+	  --include "derived/maps-$(TAG)/fused/$(MAP_MODEL)/*" --include "derived/static-depth-v1/*"
+
 MAPS := data/ravidata/derived/maps-$(TAG)
 maps: install
 	$(UV) run hf download $(HF_REPO) --repo-type dataset --local-dir data/ravidata \
@@ -137,10 +150,6 @@ static-depth-refit:                    # re-ground the saved depth maps on the t
 	uv run --group depth python scripts/static_depth.py --take $(TAKE) --per-part $(PER_PART) --model $(DEPTH_MODEL) \
 	  --refit --fit $(FIT)
 
-static-depth-upload:                   # derived/static-depth-v1 -> the HF dataset (needs `uv run hf auth login`)
-	uv run hf upload $(HF_REPO) data/ravidata/derived/static-depth-v1 derived/static-depth-v1 --repo-type dataset \
-	  --commit-message "static-depth-v1: monocular metric depth of the static takes, scaled on the AprilTags"
-
 VIZ_ARGS ?=
 viz:                                   # plain `uv`: also works from PowerShell with GNU make
 	uv run --group viz python scripts/map_viz.py $(VIZ_ARGS)
@@ -148,7 +157,8 @@ viz:                                   # plain `uv`: also works from PowerShell 
 # ---- radar analyses (python -m analysis <step>); plain `uv` so it also runs from PowerShell
 AN_TAKES  ?=
 FAMILIES  ?=
-TRIALS    ?= 150
+# 80 = the setting of results/analysis-v2 (more trials would extend its stored Optuna studies)
+TRIALS    ?= 80
 PROTOCOL  ?= pooled
 OBJECTIVE ?= both
 WORKERS   ?= 4
@@ -174,7 +184,7 @@ an-ablation:                           # one stage at a time over a threshold sw
 	$(AN) ablation $(AN_ARGS)
 story:                                 # explanatory figures: how the truth is built, range-time maps
 	$(AN) story $(AN_ARGS)
-report:                                # results/analysis-v1/REPORT.md: every number as tables
+report:                                # results/analysis-v2/REPORT.md: every number as tables
 	$(AN) report $(AN_ARGS)
 an-opt:
 	$(AN) opt $(AN_ARGS)
@@ -182,8 +192,6 @@ an-eval-tuned:
 	$(AN) eval-tuned $(AN_ARGS)
 an-floor:                              # where the early alarms come from (floor in beam, phantom); minutes
 	$(AN) floor $(AN_ARGS)
-an-cordic:
-	$(AN) cordic $(AN_ARGS)
 plots:
 	$(AN) plots $(AN_ARGS)
 REC ?= indoor_course/01_D1_tcc-1d-40mm
@@ -204,6 +212,16 @@ dataset: install
 
 dataset-upload: install
 	$(UV) run python scripts/hf_dataset.py upload --repo $(HF_REPO)
+
+HF_RELEASE_ARGS ?= --yes
+hf-status:                             # read-only comparison with the hub
+	uv run python scripts/hf_release.py status --repo $(HF_REPO)
+
+hf-patch:                              # local metadata -> the code's dataset version (idempotent, no upload)
+	uv run python scripts/hf_release.py patch
+
+hf-release: hf-patch                   # tag the old state, upload what changed, tag the new version
+	uv run python scripts/hf_release.py upload --repo $(HF_REPO) $(HF_RELEASE_ARGS)
 
 pod: $(UV)
 	$(POD_ENV) bash pod/pod.sh all

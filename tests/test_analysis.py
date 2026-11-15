@@ -5,18 +5,9 @@ import pytest
 
 pytest.importorskip("pandas")
 
-from analysis import cordic, detectors as D, geometry as G, score as SC
+from analysis import detectors as D, geometry as G, score as SC
 from analysis.cluster import dbscan
 from analysis.grid import Grid
-
-
-def test_cordic_matches_float():
-    th = np.linspace(-np.pi, np.pi, 1001)
-    s, c = cordic.sincos(th, 24, 31)
-    assert np.abs(s - np.sin(th)).max() < 1e-6 and np.abs(c - np.cos(th)).max() < 1e-6
-    a, m = cordic.atan2_mag(np.sin(th) * 1e-5, np.cos(th) * 1e-5, 24, 31)
-    assert np.abs(np.angle(np.exp(1j * (a - th)))).max() < 1e-5
-    assert np.allclose(m, 1e-5, rtol=1e-5)
 
 
 def test_cfar_finds_a_target():

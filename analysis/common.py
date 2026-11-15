@@ -21,6 +21,8 @@ ENV = {"pilot_chairs": "indoor", "static_pass1": "indoor", "static_pass2": "indo
        "outdoor_course": "outdoor"}
 QUICK = os.environ.get("RAVIDATA_QUICK", "") not in ("", "0")
 RESULTS = Path(os.environ.get("RAVIDATA_RESULTS", ROOT / "results"))   # tracked in git (analysis-quick is not)
+RUN = os.environ.get("RAVIDATA_RUN", "analysis-v2")      # results folder of full runs (analysis-v2: after the audit fixes)
+DATASET_VERSION = (1, 1)       # oldest dataset accepted: v1.1 fixed the indoor_course clock (take.json -> sync)
 BIN_M = 0.04
 
 
@@ -31,9 +33,9 @@ def set_quick(q: bool):
 
 
 def out_dir(*parts) -> Path:
-    """results/analysis-v1 (full runs, kept in git: tables, figures, videos, Optuna studies, run log) or
-    results/analysis-quick (quick tests: never mixed with full results, not in git)."""
-    p = RESULTS / ("analysis-quick" if QUICK else "analysis-v1")
+    """results/<RUN> (full runs, kept in git: tables, figures, videos, Optuna studies, run log; RUN = analysis-v2,
+    or RAVIDATA_RUN) or results/<RUN>-quick (quick tests: never mixed with full results, not in git)."""
+    p = RESULTS / (RUN + "-quick" if QUICK else RUN)
     p = p.joinpath(*parts)
     p.mkdir(parents=True, exist_ok=True)
     return p
@@ -102,6 +104,22 @@ def load_table(name: str, required: bool = True):
     return pd.read_parquet(p)
 
 
+def load_tags(required: bool = True):
+    """The tags table with t_host recomputed from t_video and the current sync (the stored t_host is the sync at the
+    time the tags step ran; a sync correction must not need the video to be read again)."""
+    T = load_table("tags", required)
+    if T is None or not len(T) or "t_video" not in T:
+        return T
+    T = T.copy()
+    for take in T["take"].unique():
+        m = (T["take"] == take).to_numpy()
+        try:
+            T.loc[m, "t_host"] = sync_of(take).video_to_host(T.loc[m, "t_video"].to_numpy(float))
+        except FileNotFoundError:
+            pass
+    return T
+
+
 def save_json(obj, name: str) -> Path:
     p = out_dir("tables") / f"{name}.json"
     p.write_text(json.dumps(obj, indent=1, default=float), encoding="utf-8")
@@ -155,7 +173,13 @@ class Sync:
 
 
 def sync_of(take: str) -> Sync:
-    s = take_json(take)["sync"]
+    tj = take_json(take)
+    v = str(tj.get("dataset_version", "v1.0"))
+    if tuple(int(x) for x in v.lstrip("v").split(".")) < DATASET_VERSION:
+        need = "v" + ".".join(map(str, DATASET_VERSION))
+        raise SystemExit(f"{take}: the local dataset is {v}, the analysis needs {need} or newer (it corrected the "
+                         f"indoor_course video offset): run `make data` (dataset owner: `make hf-patch`)")
+    s = tj["sync"]
     return Sync(float(s["video_a"]), float(s["video_b"]), float(s.get("recommended_video_offset_s", 0.0)),
                 float(s.get("imu_lag_s", 0.0)))
 

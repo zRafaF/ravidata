@@ -118,7 +118,10 @@ drift over a whole course; a global fit (pose graph, or the tags) is the next st
 Outputs per model and take in `derived/maps-v1/fused/<model>/<take>/`: `poses.npz` (per window similarity, per
 keyframe camera-to-world + depth scale: the optimised oracle poses for the analyses), `graph.json` (closures,
 residuals before / after, settings), `fused.npz` / `fused.ply`. In the viewer: *Show → fused map (TSDF)*, and
-*Chaining → pose graph (map_fuse)* for the whole-take / two-window views.
+*Chaining → pose graph (map_fuse)* for the whole-take / two-window views. The outputs used by the radar analyses
+are on the dataset (`derived/maps-v1/fused/`, dataset v1.1; `make data-analysis` or `make maps` downloads them). A
+re-run on another machine is close but not identical (a test re-run of Pi3X indoor on Linux moved the keyframe
+poses by 5 cm median, 0.84 m at most), so reproduce the analyses with the published files.
 
 First result, Pi3X indoor course (2026-11-14): 47 verified loop closures; they disagreed by 1.70 m / 8.4° with the
 plain chaining, 0.11 m / 1.1° after the pose graph. From above, the plain chaining shows the room several times,
@@ -140,7 +143,7 @@ true / model depth (or scale + offset, `--fit affine`); per tag the ratio, the e
 leave-one-tag-out. Broom tags (20, 21, 50, 51) are reported but not used for the scale: the handles are too thin
 for the models. Frames without tags (S0, the empty scene) take the take's median scale (the camera is still).
 Outputs: `derived/static-depth-v1/<model>/<take>/` (`.npz` metric depth, `.jpg`, `.ply`, `summary.json`);
-`make static-depth-upload` puts them on the dataset. The radar ground truth (`docs/analysis.md`) uses the best
+`make hf-release` puts them on the dataset (Depth Pro and DA2-Small, dataset v1.1). The radar ground truth (`docs/analysis.md`) uses the best
 model present (depthpro, then da2l, then da2s). Needs the static takes downloaded (`make data DATA_TAKES="static_pass1
 static_pass2 pilot_chairs"`); `uv run --group depth` installs PyTorch CPU + transformers on first use.
 
@@ -152,7 +155,8 @@ Depth Pro as the default.
 
 Preliminary: these are self-consistency figures, not accuracy. The chained paths of the models still differ by
 1–2 m RMS over a whole course after a similarity fit (drift of the chaining). Accuracy needs the AprilTag check
-(floor tags 10 / 12 / 17 for scale, the others held out) — still to do.
+(floor tags 10 / 12 / 17 for scale, the others held out); the per-window scale from the tags is the `map_scale`
+table of the analyses, and a held-out-tag check is not yet part of this repository.
 
 ## Viewing the maps: `scripts/map_viz.py`
 

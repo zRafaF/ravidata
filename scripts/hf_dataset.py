@@ -59,6 +59,48 @@ TAKES = {
 AUDIO = {"calibration": "none", "pilot_chairs": "none"}
 CALIB = {"folder": "calib", "video": "samsung_2026-11-13.mp4", "json": "samsung_2026-11-13.calib.json"}
 
+DATASET_VERSION = "v1.1"          # written into every take.json; the analysis refuses older local copies
+DEFAULT_OFFSET_S = 0.56
+DEFAULT_BECAUSE = ("no radar-vs-video motion check with corr >= 0.4: the default 0.56 s, the extra delay of the video "
+                   "measured on the pilot take (pilot_chairs) by matching the radar range of a walking tagged person "
+                   "with the tag range in the video")
+# Corrections to the computed clock alignment, applied by `export` and by `scripts/hf_release.py patch` (idempotent).
+# "new" replaces `field` and records the old value in sync["corrections"]; "because" replaces recommended_because.
+SYNC_CORRECTIONS = {
+    "indoor_course": {
+        "dataset_version": "v1.1", "date": "2026-11-15", "field": "recommended_video_offset_s", "new": -2.44,
+        "note": "the IMU moves with the video (imu_lag_s is measured against the video)",
+        "because": "corrected on 2026-11-15 (dataset v1.1): the default 0.56 s (measured on the pilot take) left the "
+                   "video 3.0 s late. Measured instead, in all three recordings: radar floor return vs camera height "
+                   "above the floor tags (best offset -2.4 .. -2.7 s), radar range-time ridge vs the map and AprilTag "
+                   "ranges (-2.7 .. -3.4 s, nothing at the old value), and radial speed from the radar Doppler vs "
+                   "walking speed from the camera map (r -0.77 / -0.68 at zero lag with -2.44 s, about -0.1 at "
+                   "+-3 s). With -2.44 s the phone clock minus host clock (imu_lag_s + offset) is -0.33 s, in line "
+                   "with the other takes (-0.25 .. -0.37 s)."},
+    "outdoor_course": {
+        "because": DEFAULT_BECAUSE + ". Checked on 2026-11-15: the radar floor return vs camera height gives "
+                   "+0.4 .. +0.6 s in the three recordings, consistent with it."},
+}
+
+
+def correct_sync(name: str, sync: dict) -> dict:
+    """``sync`` with SYNC_CORRECTIONS[name] applied; running it again changes nothing."""
+    c = SYNC_CORRECTIONS.get(name)
+    if not c:
+        return sync
+    s = dict(sync)
+    if "new" in c:
+        f = c["field"]
+        done = any(x.get("dataset_version") == c["dataset_version"] and x.get("field") == f
+                   for x in s.get("corrections", []))
+        if not done:
+            s["corrections"] = list(s.get("corrections", [])) + [
+                {"date": c["date"], "dataset_version": c["dataset_version"], "field": f, "old": s.get(f),
+                 "new": c["new"], "note": c["note"]}]
+        s[f] = c["new"]
+    s["recommended_because"] = c["because"]
+    return s
+
 
 # ================================================================================================ helpers
 def _video_of(folder: Path) -> Path:
@@ -454,7 +496,8 @@ def _sync(name: str, video: Path, imu: Path | None, radar_recs: list[dict]) -> d
 
     * beeps heard in the video ↔ beep times of the recordings → ``t_host = video_a * t_video + video_b``;
     * IMU lag from gyro vs video motion → ``t_host = t_phone + imu_lag``;
-    * radar check: radar motion vs video motion per recording → the extra delay of the sound (EXP-014: ~0.56 s).
+    * radar check: radar motion vs video motion per recording → the extra delay of the video (default 0.56 s, pilot take);
+    * SYNC_CORRECTIONS: values measured later, after the export (see there).
     ``recommended_video_offset_s`` is added to ``video_b`` (and to the IMU lag, which is measured against the video).
     """
     from ravidata.align import Take, auto_align, check_with_radar, load_sensorlogger, load_take_radar, scan_video
@@ -469,13 +512,13 @@ def _sync(name: str, video: Path, imu: Path | None, radar_recs: list[dict]) -> d
         rec = float(np.sum(w * np.array([lag for lag, _ in good])) / w.sum()) / 1000.0
         why = f"radar-vs-video motion, {len(good)} recording(s) with corr >= 0.4 (weighted mean)"
     else:
-        rec, why = 0.56, "no radar-vs-video check with corr >= 0.4: the value measured in EXP-014 (0.56 s)"
-    return {"video_a": al.video_a, "video_b": al.video_b, "beeps_matched": al.video_matches,
+        rec, why = DEFAULT_OFFSET_S, DEFAULT_BECAUSE
+    return correct_sync(name, {"video_a": al.video_a, "video_b": al.video_b, "beeps_matched": al.video_matches,
             "imu_lag_s": al.imu_lag, "imu_corr": al.imu_corr, "imu_method": al.imu_method,
             "radar_check": al.radar_check, "recommended_video_offset_s": round(rec, 3),
             "recommended_because": why, "notes": al.notes,
             "how_to": "t_host(video frame) = video_a * t_video + video_b + recommended_video_offset_s; "
-                      "t_host(IMU sample) = t_phone + imu_lag_s + recommended_video_offset_s"}
+                      "t_host(IMU sample) = t_phone + imu_lag_s + recommended_video_offset_s"})
 
 
 def export(only: str | None = None):
@@ -505,7 +548,7 @@ def export(only: str | None = None):
         video = work / "video.mp4"
         # the sync comes from the ORIGINAL video (full sound; same frames and frame times as the published one)
         sync = _sync(name, _video_of(folder), work / "imu" if z else None, recs)
-        info = {"name": name, "kind": kind, "description": desc, "source_folder": fold, "recordings": recs,
+        info = {"dataset_version": DATASET_VERSION, "name": name, "kind": kind, "description": desc, "source_folder": fold, "recordings": recs,
                 "video": "video.mp4" if video.exists() else None, "imu": "imu/" if z else None,
                 "sync": sync}
         tj = folder / "take.json"
@@ -534,15 +577,15 @@ def _config_rows() -> list[str]:
     return rows
 
 
-def _take_rows() -> list[str]:
+def _take_rows(root: Path = OUT) -> list[str]:
     rows = ["| take | radar | parts | recordings | video | description |", "|---|---|---|---|---|---|"]
     for name, (_, kind, desc) in TAKES.items():
-        tj = OUT / "takes" / name / "take.json"
+        tj = root / "takes" / name / "take.json"
         if not tj.exists():
             continue
         t = json.loads(tj.read_text(encoding="utf-8"))
         parts = ", ".join(dict.fromkeys(r["part"] for r in t["recordings"]))
-        v = OUT / "takes" / name / "video.mp4"
+        v = root / "takes" / name / "video.mp4"
         vid = f"{v.stat().st_size / 1e9:.2f} GB" if v.exists() else "—"
         rows.append(f"| `{name}` | {'still' if kind == 'static' else 'carried'} | {parts} | {len(t['recordings'])} | "
                     f"{vid} | {desc} |")
@@ -575,9 +618,12 @@ def write_apriltags():
     (OUT / "apriltags.json").write_text(json.dumps(info, indent=1, ensure_ascii=False), encoding="utf-8")
 
 
-def write_card():
-    card = CARD.format(configs="\n".join(_config_rows()), takes="\n".join(_take_rows()))
-    (OUT / "README.md").write_text(card, encoding="utf-8")
+def render_card(root: Path = OUT) -> str:
+    return CARD.format(configs="\n".join(_config_rows()), takes="\n".join(_take_rows(root)))
+
+
+def write_card(root: Path = OUT):
+    (root / "README.md").write_text(render_card(root), encoding="utf-8")
 
 
 CARD = """---
@@ -647,7 +693,21 @@ takes/<take>/
       frame_index   (frames,) the radar's own frame counter (gaps = lost frames)
       range_m       (range bins,)        v_axis (Doppler bins,) m/s, 2D only
       attrs: config_json (the radar configuration), derived, recording_json (part, beeps, loss, lead-in)
+derived/
+  maps-v1/              feed-forward 3D maps of the two carried takes (GPU pod, `make pod` in the code repository)
+    <model>/<take>/win_NNN.npz, run.json   per window of 64 (or 48) keyframes: poses, depth, confidence, K
+    frames_<take>.json  the keyframes given to the models (video frame, time, flow, sharpness), K, tone curve
+    fused/<model>/<take>/  global map made on a CPU (`make fuse`): poses.npz (pose graph + ICP, per keyframe
+                        camera-to-world), graph.json, fused.npz / fused.ply (TSDF points)
+    logs/, metrics/     every log and running metric of the pod (GPU, time, memory, energy)
+  static-depth-v1/<model>/<take>/   monocular metric depth of the still takes (CPU; Depth Pro `depthpro`,
+                        Depth Anything V2 Small `da2s`), scaled on the AprilTags: .npz depth, .jpg frame, .ply, summary.json
 ```
+
+The derived files are the exact inputs of the published analysis (`results/analysis-v2` in the code repository).
+`fused/` and `static-depth-v1/` can be remade with `make fuse` / `make static-depth`, but not bit for bit (a re-run of
+the pose graph on another machine moved the keyframe poses by 5 cm median, up to 0.8 m), so use the uploaded ones to
+reproduce the published numbers.
 
 Parts: `S0` empty scene, `S1` objects placed, `S2` things moving (person, broom), `D1` / `D2` the indoor / outdoor
 course, `chairs` / `walk` in the pilot. The first recording of a take starts with a **sync lead-in** (`lead_in_s`,
@@ -676,10 +736,14 @@ t_host(video frame) = video_a * t_video + video_b + recommended_video_offset_s
 t_host(IMU sample)  = t_phone + imu_lag_s + recommended_video_offset_s
 ```
 
-`recommended_video_offset_s` (~0.56 s) is the delay between the logged beep time and the sound leaving the
-laptop, measured by matching the radar range of a moving tagged target with its range from the video (median
-agreement 2 cm afterwards) or by radar-vs-video motion. Check it on your use; the beep fit itself is good to about
-one video frame.
+`recommended_video_offset_s` is the remaining delay between the logged beep time and the video. For the still takes
+it comes from radar-vs-video motion (`recommended_because` says which recordings); for `outdoor_course` it is the
+default 0.56 s (measured on the pilot take), which the radar floor return agrees with
+(+0.4 .. +0.6 s). For `indoor_course` the default was wrong: since v1.1 the offset is **−2.44 s** (the video was
+3.0 s late), measured from the radar floor return against the camera height, the radar range against the map and
+tag ranges, and the radar Doppler against the walking speed from the map (details and the old value in
+`take.json` → `sync` → `recommended_because`, `corrections`). The beep fit itself is good to about one video frame;
+check the offset on your use.
 
 ## Camera
 
@@ -697,6 +761,8 @@ length is known to about ±1.5 %.
 - One pass per config per course: configurations are compared on similar, not identical, motion.
 - No lidar or motion-capture ground truth: positions come from AprilTags (and from vision models you run).
 - The live radar angle shown during recording was uncalibrated; calibrate the RX phase offsets before using angles.
+  The code repository fits them on the walking person of the still takes (azimuth: about 3° median error between
+  takes); elevation stays approximate (the targets span only a few degrees).
 
 ## Privacy
 
@@ -706,6 +772,17 @@ sound contains **only the beeps**: band-passed to
 1.0–1.4 kHz (zero-phase) and kept ±0.1 s around each beep found in the original, silence elsewhere. The clock
 alignment in `take.json` was computed from the original videos (full sound, identical frames and frame times);
 the beep onsets in the published sound match the originals within a few ms.
+
+## Versions
+
+| version | date | change |
+|---|---|---|
+| v1.0 | 2026-11-14 | recordings, calibration, `derived/maps-v1` (pod) |
+| v1.1 | 2026-11-15 | `indoor_course` video offset 0.56 → −2.44 s (`take.json`, with the old value in `sync.corrections`); `outdoor_course` `recommended_because` reworded (value unchanged); `derived/maps-v1/fused` and `derived/static-depth-v1` added; this card: derived files, time alignment, versions |
+
+`hf download DoninhaD/ravidata --repo-type dataset --revision v1.0` gets the dataset as it was before v1.1 (the
+inputs of the code repository's `results/analysis-v1`, apart from `fused/` and `static-depth-v1`, which were made
+locally then).
 
 ## Loading
 

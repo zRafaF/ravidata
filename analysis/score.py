@@ -59,6 +59,21 @@ def _assign(Dm):
     return linear_sum_assignment(Dm)
 
 
+ARC_BINS = (0.0, 0.8, 1.1, 1.5, 2.2, np.inf)   # truth-distance classes of the balanced 'found' rate
+
+
+def arc_balanced(truth, det, tol=0.25):
+    """Found rate per truth-distance class, averaged over the classes that occur (balanced accuracy): the truth
+    sits near 0.9 m most of the time indoors, so a constant answer scores ~0.6 on the plain rate but only
+    ~1/(number of classes) here. Returns (rate, hits per class, frames per class)."""
+    ok = np.isfinite(truth)
+    hit = ok & np.isfinite(det) & (np.abs(det - truth) <= tol)
+    k = np.clip(np.digitize(truth[ok], ARC_BINS) - 1, 0, len(ARC_BINS) - 2)
+    n = np.bincount(k, minlength=len(ARC_BINS) - 1).astype(float)
+    h = np.bincount(k, weights=hit[ok].astype(float), minlength=len(ARC_BINS) - 1)
+    return (float(np.mean(h[n > 0] / n[n > 0])) if (n > 0).any() else np.nan), h, n
+
+
 ARC_ALERT_M = 2.0            # arc view: an alert is 'an obstacle nearer than 2 m anywhere in the beam'
 
 
@@ -222,6 +237,12 @@ def summary(frames, dets=None, fps=None) -> dict:
         out["arc_early_rate"] = float((np.isfinite(nd2) & (~ok | (nd2 < at - 0.25))).sum() / max(1, len(Fa)))
         out["arc_late_rate"] = float((ok & (~np.isfinite(nd2) | (nd2 > at + 0.25))).sum() / max(1, ok.sum()))
         out["arc_err_m"] = float(np.median(np.abs(nd2 - at)[b3])) if b3.any() else np.nan
+        if ok.any():                                       # skill floor: the best constant answer (no radar)
+            cs = np.arange(0.3, 4.1, 0.02)
+            hit = (np.abs(at[ok][None] - cs[:, None]) <= 0.25).mean(1)
+            out["arc_pd_const"], out["arc_const_m"] = float(hit.max()), float(cs[int(hit.argmax())])
+            out["arc_pd_bal"] = arc_balanced(at, nd2)[0]
+            out["arc_pd_bal_const"] = float(max(arc_balanced(at, np.full(len(at), c))[0] for c in cs[::5]))
         ta, da = ok & (at < ARC_ALERT_M), np.isfinite(nd2) & (nd2 < ARC_ALERT_M)
         out["arc_alert_recall"] = float((ta & da).sum() / max(1, ta.sum()))
         out["arc_alert_false_rate"] = float((da & ~ta).sum() / max(1, (~ta).sum()))

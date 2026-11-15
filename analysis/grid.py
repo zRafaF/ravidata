@@ -4,7 +4,7 @@ Per frame: (1) move the grid by the pose change (none / IMU yaw / IMU yaw + assu
 (2) decay toward 0, (3) inverse sensor model: a Gaussian 'occupied' stamp at every detection (sigma along range
 and across azimuth) and 'free' along its ray (ray marching from r_min to r - margin), (4) clamp. Obstacles are
 read from the grid after optional blur / morphology, hysteresis thresholds and a minimum component size: per
-component and 4 deg azimuth sector, its nearest cell. sin/cos come from `trig` (float64 or a CORDIC model)."""
+component and 4 deg azimuth sector, its nearest cell. sin/cos come from `trig` (float64 by default)."""
 
 from __future__ import annotations
 

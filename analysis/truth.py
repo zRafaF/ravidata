@@ -390,7 +390,7 @@ def run_carried(take, tags, rows_s, rows_f, rows_scale, trc, model="pi3x", max_d
 
 def run(takes=None, model="pi3x", max_dt=0.25):
     import pandas as pd
-    tags = C.load_table("tags", required=False)
+    tags = C.load_tags(required=False)
     trc = t_rc()
     rows_s, rows_f, rows_scale = [], [], []
     OBJECTS.clear()

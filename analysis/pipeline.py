@@ -19,8 +19,11 @@ from .radar import features_cached as features
 PRE_KEYS = ("bg", "bg_alpha", "doppler", "zero_band", "combine")
 COMMON = dict(bg="none", bg_alpha=0.98, doppler="sum", zero_band=0, combine="mean", r_min=0.30, r_max=4.10,
               m=1, n=1, spread=1, hgate=False, radar_h=1.1, h_min=0.15, h_max=np.inf, el_off=0.0,
-              integ=0.0, track=False, track_gate=0.3, track_confirm=3, track_hold=5, track_alpha=0.5, track_beta=0.1)
+              integ=0.0, noise_q=0.5, med=1, track=False, track_gate=0.3, track_confirm=3, track_hold=5, track_alpha=0.5, track_beta=0.1)
 # integ: causal non-coherent integration of the power over frames before detection, P_k = a P_k-1 + (1-a) P_k.
+# noise_q: the frame's noise reference = this quantile of the power over the usable bins (0.5 = the median, which
+#   indoors is clutter 20-25 dB above the receiver noise; a low quantile is closer to the noise floor).
+# med: causal running median (last `med` frames) of the nearest detection's range; one output per frame.
 # track: nearest-obstacle tracker after everything (alpha-beta on the nearest detection, confirm / hold).
 # hgate: radar + IMU fusion -- the phone's gravity levels each detection's elevation; returns that land on the floor
 # are dropped before any clustering / grid (nothing overhead). radar_h = assumed radar height above the floor.
@@ -41,13 +44,14 @@ DEFAULTS = {
                                  "eps": 0.15, "min_pts": 2, "diffusion": False, "edge_frac": 0.125,
                                  "snr_min_db": 0.0}.items()}),
 }
+DEFAULTS["grid_doppler"] = DEFAULTS["grid"] | __import__("analysis.grid_doppler", fromlist=["x"]).DEFAULTS
 DEFAULTS["grid_legacy_imu"] = dict(DEFAULTS["grid_legacy"], pose="imu")
 DEFAULTS["grid_imu"] = dict(DEFAULTS["grid"], pose="imu_speed")
 DEFAULTS["grid_oracle"] = dict(DEFAULTS["grid"], pose="oracle")
 DEFAULTS["app_threshold"] = {}
 DEFAULTS["app_cfar"] = {}
 FAMILIES = list(DEFAULTS)
-TWO_D_ONLY = {"rd_cfar"}
+TWO_D_ONLY = {"rd_cfar", "grid_doppler"}
 
 
 def _space_common(t, two_d, carried):
@@ -63,7 +67,10 @@ def _space_common(t, two_d, carried):
     p["m"] = t.suggest_int("m", 1, p["n"])
     p["spread"] = t.suggest_int("spread", 0, 2)
     p["integ"] = t.suggest_float("integ", 0.0, 0.95)
+    p["noise_q"] = t.suggest_float("noise_q", 0.05, 0.5)
     p["track"] = t.suggest_categorical("track", [False, True])
+    if not p["track"]:
+        p["med"] = t.suggest_int("med", 1, 15)
     if p["track"]:
         p["track_gate"] = t.suggest_float("track_gate", 0.1, 0.6)
         p["track_confirm"] = t.suggest_int("track_confirm", 1, 8)
@@ -111,6 +118,13 @@ def space(t, family: str, two_d: bool, carried: bool) -> dict:
         p["L_edge_frac"] = t.suggest_float("L_edge_frac", 0.02, 0.8, log=True)
         p["L_snr_min_db"] = t.suggest_float("L_snr_min_db", 0.0, 20.0)
         return p
+    if family == "grid_doppler":                               # range-Doppler front end and the Doppler layers
+        for k, lo, hi in (("guard_d", 0, 2), ("guard_r", 0, 3), ("train_d", 1, 4), ("train_r", 2, 10)):
+            p[k] = t.suggest_int(k, lo, hi)
+        p["gd_v1"] = t.suggest_float("gd_v1", 0.1, 0.45)
+        p["gd_v2"] = t.suggest_float("gd_v2", p["gd_v1"] + 0.1, 1.2)
+        p["gd_w0"] = t.suggest_float("gd_w0", 0.0, 1.0)
+        p["gd_w1"] = t.suggest_float("gd_w1", 0.0, 1.0)
     if family.startswith("grid"):
         p["front"] = t.suggest_categorical("front", ["ca", "os", "thr"])
         p["guard"] = t.suggest_int("guard", 0, 4)
@@ -155,6 +169,10 @@ def detect(rec: C.Recording, family: str, p: dict, max_frames=None, F=None, trig
         Pi = lfilter([1 - a_], [1, -a_], F.P, axis=0, zi=(a_ * F.P[:1]))[0]
         use = (F.r >= G.R_MIN) & (F.r <= G.R_MAX)
         F = dataclasses.replace(F, P=Pi, noise=np.median(Pi[:, use], 1))
+    if float(p.get("noise_q", 0.5)) != 0.5:
+        import dataclasses
+        use = (F.r >= G.R_MIN) & (F.r <= G.R_MAX)
+        F = dataclasses.replace(F, noise=np.quantile(F.P[:, use], float(p["noise_q"]), axis=1))
     if family in ("thr", "thr_nearest"):
         mask = D.threshold_mask(F, p["k_db"])
     elif family in ("ca_cfar", "cfar_dbscan"):
@@ -165,6 +183,16 @@ def detect(rec: C.Recording, family: str, p: dict, max_frames=None, F=None, trig
         mask = D.rd_mask(F, (p["guard_d"], p["guard_r"]), (p["train_d"], p["train_r"]), p["k_db"])
         if mask is None:
             return None, np.nan, F
+    elif family == "grid_doppler":                             # range-azimuth-Doppler grid (own front end)
+        from . import grid_doppler as GD
+        if F.RD is None:
+            return None, np.nan, F
+        d = GD.run(rec, F, p, max_frames, trig)
+        if p.get("track"):
+            d = track_nearest(d, F.t, p)
+        elif int(p.get("med", 1)) > 1:
+            d = median_nearest(d, F.n, int(p["med"]))
+        return d, (time.perf_counter() - t0) * 1000 / max(F.n, 1), F
     elif family.startswith("grid_legacy"):                     # no detector in front: every bin goes in
         from .grid_legacy import run_legacy
         d = run_legacy(F, p, trig, poses)
@@ -189,8 +217,32 @@ def detect(rec: C.Recording, family: str, p: dict, max_frames=None, F=None, trig
         d = run_grid(F, d, p, trig, poses)
     if p.get("track"):
         d = track_nearest(d, F.t, p)
+    elif int(p.get("med", 1)) > 1:
+        d = median_nearest(d, F.n, int(p["med"]))
     ms = (time.perf_counter() - t0) * 1000 / max(F.n, 1)
     return d, ms, F
+
+
+def median_nearest(d, n, N):
+    """Causal running median over the last N frames of the nearest detection's range (frames without a detection
+    are skipped; an output needs detections in at least half of the window). One output per frame."""
+    near = np.full(n, np.nan)
+    idx = np.full(n, -1)
+    if len(d["f"]):
+        o = np.lexsort((d["r"], d["f"]))
+        first = np.r_[True, d["f"][o][1:] != d["f"][o][:-1]]
+        near[d["f"][o][first]] = d["r"][o][first]
+        idx[d["f"][o][first]] = o[first]
+    pad = np.concatenate([np.full(N - 1, np.nan), near])
+    win = np.lib.stride_tricks.sliding_window_view(pad, N)                   # (n, N): frames i-N+1 .. i
+    ok = np.isfinite(win).sum(1) >= (N + 1) // 2
+    with np.errstate(all="ignore"):
+        med = np.where(ok, np.nanmedian(np.where(ok[:, None], win, 0.0), 1), np.nan)
+    f = np.flatnonzero(ok)
+    j = idx[f]
+    pick = lambda k: np.where(j >= 0, d[k][np.maximum(j, 0)], np.nan if k != "score" and k != "snr_db" else 0.0)
+    return dict(f=f.astype(np.int32), r=med[f], az=pick("az"), el=pick("el"), score=pick("score"),
+                snr_db=pick("snr_db"))
 
 
 def track_nearest(d, t, p):

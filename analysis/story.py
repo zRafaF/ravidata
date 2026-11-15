@@ -1,6 +1,6 @@
 """Explanatory figures (the 'story' of the evaluation), drawn from the data, for the reader and the paper.
 
-    python -m analysis.story               # the curated set -> results/analysis-v1/figures/story/
+    python -m analysis.story               # the curated set -> results/analysis-v2/figures/story/
     make story
 
 * truth_<take>_<t>.png    how the ground truth is built at one radar frame: camera view with obstacle / floor
@@ -72,7 +72,7 @@ def fig_truth_carried(key="indoor_course/01_D1", t_rel=30.0, pdf=False):
     f = int(np.searchsorted(t_all, t_all[0] + t_rel))
     t = t_all[f]
     trc = TR.t_rc()
-    tags = C.load_table("tags", required=False)
+    tags = C.load_tags(required=False)
     tm = TakeMaps(take)
     tm.fit_scale(tags)
     j = int(np.argmin(np.abs(tm.t[tm.kf] - t)))
