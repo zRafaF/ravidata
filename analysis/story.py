@@ -1,6 +1,6 @@
 """Explanatory figures (the 'story' of the evaluation), drawn from the data, for the reader and the paper.
 
-    python -m analysis.story               # the curated set -> results/analysis-v2/figures/story/
+    python -m analysis.story               # the curated set -> results/analysis-v4/figures/story/
     make story
 
 * truth_<take>_<t>.png    how the ground truth is built at one radar frame: camera view with obstacle / floor
@@ -89,7 +89,7 @@ def fig_truth_carried(key="indoor_course/01_D1", t_rel=30.0, pdf=False):
     uv = X[:, :2] / X[:, 2:3] * [tm.K[0, 0], tm.K[1, 1]] + [tm.K[0, 2], tm.K[1, 2]]
     o_r, o_az, o_el, f_r, _, cor_r = TR.summarise(G.to_radar(X, trc), obs, flo)
     # local map (+-4 s of keyframes in the same window) in the radar frame at t
-    P, tk, hh, s_w, t_w, c2w_w = TR.window_cloud(tm, take, tm.owner[i][0], stride=4)
+    P, tk, hh, s_w, t_w, c2w_w, _ = TR.window_cloud(tm, take, tm.owner[i][0], stride=4)
     Tw = interp_poses(t_w, c2w_w, np.array([t]))[0]
     sel = np.abs(tk - t) <= TR.ARC_WINDOW_S
     Q = G.to_radar((P[sel] - Tw[:3, 3]) @ Tw[:3, :3] * s_w, trc)

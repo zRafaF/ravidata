@@ -1,12 +1,12 @@
 # Radar analyses
 
 Everything here runs on a CPU (your PC, not the GPU pod). Each step writes **tables** (Parquet / JSON) under
-`results/analysis-v2/tables/`; figures are drawn **from those tables only** by `make plots`, so a
+`results/analysis-v4/tables/`; figures are drawn **from those tables only** by `make plots`, so a
 different representation is a change in `analysis/plots.py` and a re-run of seconds, never a re-run of the
-analysis. Every run appends a line to `results/analysis-v2/runs.jsonl` (step, settings, commit, duration).
+analysis. Every run appends a line to `results/analysis-v4/runs.jsonl` (step, settings, commit, duration).
 
 ```
-make analysis-quick      # every step on ~7 s of every recording -> results/analysis-v2-quick (~6 min); check the figures
+make analysis-quick      # every step on ~7 s of every recording -> results/analysis-v4-quick (~6 min); check the figures
 make analysis            # every step on the full data, in order (~3-4 h, see the table)
 make plots               # figures from whatever tables exist (QUICK=1 for the quick ones)
 make an-<step>           # one step; QUICK=1 for its quick version; AN_TAKES / FAMILIES / TRIALS / PROTOCOL / WORKERS
@@ -14,16 +14,16 @@ make an-<step>           # one step; QUICK=1 for its quick version; AN_TAKES / F
 
 Every long loop shows a progress bar with the time left; each step starts with `[i/n]` and the time so far.
 
-Results live in `results/analysis-v2/` and are kept in git (tables, figures, videos, Optuna studies, the run
-log, `REPORT.md`), so a paper number can always be traced to its table and run. `results/analysis-v1/` is the
-superseded first version; what changed is in `CHANGELOG.md`, which also lists the steps not yet re-run in
-`analysis-v2` (ablation, plots, story, report, the plane objective, the strict protocol). The recordings are on
+Results live in `results/analysis-v4/` and are kept in git (tables, figures, videos, Optuna studies, the run
+log, `REPORT.md`), so a paper number can always be traced to its table and run. `analysis-v2` is kept
+because v4 reuses its tags and calibration; v1 (git history) and v3 are not kept; what changed and why is in `CHANGELOG.md`. Not run in `analysis-v4`: the plane
+objective and the strict protocol. The recordings are on
 Hugging Face; `make data-analysis` downloads what the steps read. `RAVIDATA_RUN=<name>` writes a full run to
 `results/<name>` instead (to compare with the published one). To redo only what changed: `make analysis FROM=<step>` (tags -> extrinsic -> truth -> sensor
 -> eval -> ablation -> opt -> eval-tuned -> floor -> plots -> story -> report); the ablation caches every recording's
 result (keyed by settings, truth table and code) and the Optuna studies resume.
 
-Quick results go to a separate folder (`results/analysis-v2-quick`, not in git) and are never mixed with full ones. Delete that
+Quick results go to a separate folder (`results/analysis-v4-quick`, not in git) and are never mixed with full ones. Delete that
 folder whenever you like.
 
 ## Steps
@@ -58,7 +58,7 @@ make play REC=indoor_course/01_D1_tcc-1d-40mm START=20 SECONDS=15 PLAY_FAMILIES=
 make play REC=static_pass1/04_S1 PLAY_ARGS="--bg empty --gif"
 ```
 
-An MP4 (and a GIF with `--gif`) in `results/analysis-v2/videos/`, at the radar's frame rate:
+An MP4 (and a GIF with `--gif`) in `results/analysis-v4/videos/`, at the radar's frame rate:
 
 - **Left:** the synchronised camera frame. The truth points (white rings) and every family's detections are
   projected into it.
@@ -161,7 +161,7 @@ best balanced found × (1 − early) (`tuned_arc`, `arc_score_bal`).
 **Price of universality** = per-scene optimum minus one setting for every scene on the held-out take
 (`opt_price_of_universality_*.png`). A bad result is reported as it is.
 
-Optuna keeps one SQLite file per study in `results/analysis-v2/optuna/`; a study is resumed if it exists (raise
+Optuna keeps one SQLite file per study in `results/analysis-v4/optuna/`; a study is resumed if it exists (raise
 `TRIALS` to continue it). The published studies are in git, so `make an-opt` on a fresh clone only rebuilds the
 tables; use a new `RAVIDATA_RUN` to repeat the search. A study resumed after a change of the search space mixes
 trials of both versions. On a network or virtual drive where SQLite locking fails, set

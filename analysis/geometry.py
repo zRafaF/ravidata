@@ -60,14 +60,20 @@ def up_from_gravity(g_dev) -> np.ndarray:
     return u / np.linalg.norm(u, axis=-1, keepdims=True)
 
 
+FLOOR_MIN_SHARE = 0.25       # floor = the LOWEST level holding >= this share of the densest level's points
+
+
 def floor_height(h: np.ndarray, w: np.ndarray | None = None, lo=-2.5, hi=-0.25, bin_m=0.04) -> float:
-    """Height of the floor below the camera (negative) = densest level among points below the camera."""
+    """Height of the floor below the camera (negative): the lowest horizontal level with a substantial share of the
+    points (>= FLOOR_MIN_SHARE of the densest level). The densest level alone is often a table top when the camera
+    looks down at a desk (analysis-v3: 20 % of the indoor frames had the floor 0.3-0.8 m below the camera)."""
     m = np.isfinite(h) & (h > lo) & (h < hi)
     if m.sum() < 50:
         return np.nan
     hist, edges = np.histogram(h[m], bins=np.arange(lo, hi + bin_m, bin_m), weights=None if w is None else w[m])
     hist = np.convolve(hist, [0.25, 0.5, 0.25], "same")
-    k = int(np.argmax(hist))
+    peak = (hist >= FLOOR_MIN_SHARE * hist.max()) & (hist >= np.r_[0, hist[:-1]]) & (hist >= np.r_[hist[1:], 0])
+    k = int(np.flatnonzero(peak)[0]) if peak.any() else int(np.argmax(hist))
     sel = m & (np.abs(h - (edges[k] + bin_m / 2)) < 1.5 * bin_m)
     return float(np.median(h[sel]))
 

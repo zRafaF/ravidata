@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import json
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -96,6 +97,25 @@ def check_words(paths):
 
 
 # ------------------------------------------------------------------------------------------------- remote comparison
+NETWORK_ERRORS = ("ReadError", "WriteError", "ConnectError", "RemoteProtocolError", "ReadTimeout", "WriteTimeout",
+                  "ConnectTimeout", "PoolTimeout", "ConnectionResetError", "ConnectionError", "TimeoutError")
+
+
+def retry(fn, *args, tries: int = 5, **kwargs):
+    """Call fn, retrying dropped connections and 5xx answers (30 s, 60 s, ... apart)."""
+    for k in range(tries):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:                    # noqa: BLE001  (network errors of httpx / requests / the OS)
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            transient = type(e).__name__ in NETWORK_ERRORS or (status is not None and status >= 500)
+            if not transient or k == tries - 1:
+                raise
+            wait = 30 * (k + 1)
+            print(f"  {type(e).__name__}: {str(e)[:100]} - retrying in {wait} s ({k + 1}/{tries - 1})")
+            time.sleep(wait)
+
+
 def api_or_exit():
     from huggingface_hub import HfApi
     return HfApi()
@@ -103,14 +123,15 @@ def api_or_exit():
 
 def remote_state(api, repo: str):
     """(tags, {path: blob_id} of the metadata files, {folder: {path: size}})."""
-    tags = [t.name for t in api.list_repo_refs(repo, repo_type="dataset").tags]
-    info = api.get_paths_info(repo, meta_files(), repo_type="dataset")
+    tags = [t.name for t in retry(api.list_repo_refs, repo, repo_type="dataset").tags]
+    info = retry(api.get_paths_info, repo, meta_files(), repo_type="dataset")
     blobs = {i.path: getattr(i, "blob_id", None) for i in info}
     trees = {}
     for f in FOLDERS:
         try:
             trees[f] = {e.path: (e.lfs.sha256 if getattr(e, "lfs", None) else e.blob_id)
-                        for e in api.list_repo_tree(repo, path_in_repo=f, recursive=True, repo_type="dataset")
+                        for e in retry(lambda: list(api.list_repo_tree(repo, path_in_repo=f, recursive=True,
+                                                                       repo_type="dataset")))
                         if getattr(e, "blob_id", None)}
         except Exception:                                  # folder not on the hub yet
             trees[f] = {}
@@ -167,7 +188,8 @@ def upload(repo: str, yes: bool):
     new = H.DATASET_VERSION
     steps = []
     if (meta or folders) and PREVIOUS not in tags:
-        steps.append(("tag", PREVIOUS, f"before {new}: the dataset as used by results/analysis-v1"))
+        steps.append(("tag", PREVIOUS, f"before {new}: the dataset as used by results/analysis-v1",
+                      previous_commit(api, repo, new)))
     if meta:
         steps.append(("meta", meta, f"{new}: " + "; ".join(_why(meta))))
     for f in folders:
@@ -179,24 +201,38 @@ def upload(repo: str, yes: bool):
         return
     for s in steps:
         print(("would " if not yes else "") + {"tag": "tag", "meta": "upload", "folder": "upload folder"}[s[0]],
-              s[1], "-", s[2])
+              s[1], "-", s[2] + (f" (at commit {s[3][:8]})" if len(s) > 3 else ""))
     if not yes:
         print("(dry run: add --yes, or `make hf-release`)")
         return
-    for kind, what, msg in steps:
-        if kind == "tag":
-            api.create_tag(repo, tag=what, tag_message=msg, repo_type="dataset")
-        elif kind == "meta":
-            api.create_commit(repo, repo_type="dataset", commit_message=msg,
-                              operations=[CommitOperationAdd(path_in_repo=f, path_or_fileobj=str(DATA / f)) for f in what])
-        else:
-            api.upload_folder(repo_id=repo, repo_type="dataset", folder_path=str(DATA / what), path_in_repo=what,
-                              commit_message=msg)
-        print(f"done: {kind} {what if isinstance(what, str) else len(what)}")
+    try:
+        for kind, what, msg, *rev in steps:
+            if kind == "tag":
+                retry(api.create_tag, repo, tag=what, tag_message=msg, revision=rev[0] if rev else None,
+                      repo_type="dataset", exist_ok=True)
+            elif kind == "meta":
+                retry(api.create_commit, repo, repo_type="dataset", commit_message=msg,
+                      operations=[CommitOperationAdd(path_in_repo=f, path_or_fileobj=str(DATA / f)) for f in what])
+            else:
+                retry(api.upload_folder, repo_id=repo, repo_type="dataset", folder_path=str(DATA / what),
+                      path_in_repo=what, commit_message=msg)
+            print(f"done: {kind} {what if isinstance(what, str) else len(what)}")
+    except Exception as e:                        # noqa: BLE001
+        raise SystemExit(f"stopped: {type(e).__name__}: {str(e)[:200]}\nRe-run `make hf-release`: finished steps are "
+                         "skipped (tags that exist, files already identical on the hub).")
     _, meta2, folders2, _ = plan(api, repo)
     print("check: hub identical to data/ravidata" if not meta2 and not folders2 else
           f"check FAILED: still different: {meta2} {list(folders2)}")
     print(f"https://huggingface.co/datasets/{repo}")
+
+
+def previous_commit(api, repo: str, new: str) -> str:
+    """Newest commit on main that this release did not make (so PREVIOUS marks the state before it, even after an
+    interrupted run that already uploaded something)."""
+    for c in retry(api.list_repo_commits, repo, repo_type="dataset"):
+        if not (c.title or "").startswith(f"{new}:"):
+            return c.commit_id
+    raise SystemExit("no commit found before this release")
 
 
 def _why(meta):

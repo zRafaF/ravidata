@@ -21,7 +21,7 @@ ENV = {"pilot_chairs": "indoor", "static_pass1": "indoor", "static_pass2": "indo
        "outdoor_course": "outdoor"}
 QUICK = os.environ.get("RAVIDATA_QUICK", "") not in ("", "0")
 RESULTS = Path(os.environ.get("RAVIDATA_RESULTS", ROOT / "results"))   # tracked in git (analysis-quick is not)
-RUN = os.environ.get("RAVIDATA_RUN", "analysis-v2")      # results folder of full runs (analysis-v2: after the audit fixes)
+RUN = os.environ.get("RAVIDATA_RUN", "analysis-v4")      # results folder of full runs (analysis-v4: ground counts; CHANGELOG.md)
 DATASET_VERSION = (1, 1)       # oldest dataset accepted: v1.1 fixed the indoor_course clock (take.json -> sync)
 BIN_M = 0.04
 
@@ -33,7 +33,7 @@ def set_quick(q: bool):
 
 
 def out_dir(*parts) -> Path:
-    """results/<RUN> (full runs, kept in git: tables, figures, videos, Optuna studies, run log; RUN = analysis-v2,
+    """results/<RUN> (full runs, kept in git: tables, figures, videos, Optuna studies, run log; RUN = analysis-v4,
     or RAVIDATA_RUN) or results/<RUN>-quick (quick tests: never mixed with full results, not in git)."""
     p = RESULTS / (RUN + "-quick" if QUICK else RUN)
     p = p.joinpath(*parts)

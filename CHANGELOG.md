@@ -4,6 +4,41 @@ Results folders under `results/` are named after the analysis version that made 
 `runs.jsonl` (step, settings, commit, duration of every run). The dataset on Hugging Face has its own versions
 (git tags on the dataset repository, see its card).
 
+## analysis-v4 (2026-11-17): the ground counts as an obstacle; floor level
+
+- **Truth definition.** The radar is scored on the nearest thing in its field of view, the ground included
+  (`truth_frames.arc_r` = min(`arc_obs_r`, `arc_floor_r`)). Field of view: +-60 deg in azimuth and elevation (the
+  datasheet's 120 deg; obstacles used +-30 deg of elevation before). The nearest ground point comes from the map
+  window's floor plane (`truth.ground_range`), not from floor points: the camera never sees the ground right below
+  the radar, the radar does. Until v3, detections at the floor were scored as early alarms.
+- **Floor level.** The floor is now the lowest horizontal level holding at least a quarter of the densest level's
+  points (`geometry.floor_height`); the densest level alone was often the desk top (v3: 20 % of the indoor frames had
+  the floor 0.3-0.8 m below the camera; now about 1 %).
+- `REPORT.md`: outcome split by "ground nearest" / "obstacle nearer than the ground".
+- `floor` step: the phantom table (alarms with nothing within 2 m) is empty under this definition, since the
+  ground is always within reach; `phantom_table` no longer fails on it. `make analysis-tail RUN_TO=...` runs
+  floor, plots, report and story for a run that stopped after eval-tuned.
+- `maps.TakeMaps.K_of`: VGGT, MapAnything and DA3 points are built with each frame's own predicted K (DA3 depth at
+  504 px is sampled at scaled pixel coordinates); Pi3X keeps the calibrated K and is bit-for-bit unchanged (checked on
+  both walks), so no published number moves. Needed before any comparison of the four networks.
+- Clean-up: `results/analysis-v1` (superseded; in git history) and `results/analysis-v3` removed, `analysis-v2` kept
+  as the source of v4's tags and calibration; `scripts/fig_radar_vs_tag.py` (first-draft thesis figure, replaced by
+  `analysis/paper`) removed.
+- `analysis-v4` is now the default run (`RAVIDATA_RUN`); `make analysis-from-truth` defaults to v4 -> v5.
+- Thesis figure exporters: only the ones the thesis uses are kept (`analysis/paper/build.py`); the first-draft
+  exporters `f01`, `f04`-`f18` and `fig_sinc` (read analysis-v1/v2 tables) are removed.
+
+## analysis-v3 (2026-11-16): map scale of the windows without tags
+
+- **Metric scale of map windows without AprilTags.** A window needs >= 3 tag sightings for its own scale; the others
+  took the median of all tag ratios, which ignores that every window of a feed-forward model has its own scale.
+  Outdoors 13 of 21 windows got a scale 27-39 % too small (the truth was that much too near; it showed as radar
+  ridges parallel to, and farther than, the truth line); indoors 12 of 23 windows, by up to 22 %. Now
+  (`maps.TakeMaps.fit_scale`): the window's scale from the pose graph of the fused map (`window_s`) times one factor
+  fitted on the tagged windows; on the tagged windows this agrees with their own tag scale within about 3 % (one
+  outdoor window 10 %). The tags and the calibration are unchanged, so `make analysis-from-truth` copies them from
+  analysis-v2 (`analysis/seed.py`, recorded in `runs.jsonl`) and re-runs truth and every later step.
+
 ## analysis-v2 (2026-11-15), the current results
 
 `results/analysis-v2` is the canonical line. Code: the working tree after commit `a8253ca` (the run log records

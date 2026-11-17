@@ -1,7 +1,7 @@
 """python -m analysis <step> [options]   (make an-<step> / make analysis / make analysis-quick)
 
-Steps, in the order `all` runs them (each writes tables under results/analysis-v2/tables;
---quick writes to results/analysis-v2-quick and uses a few seconds of every recording):
+Steps, in the order `all` runs them (each writes tables under results/analysis-v4/tables;
+--quick writes to results/analysis-v4-quick and uses a few seconds of every recording):
 
   tags        GT2  AprilTag poses in the videos                          -> tags
   extrinsic   GT3  radar-camera offset, range bias, angle calibration     -> calib_targets, extrinsic.json, angle_calib.json
@@ -34,7 +34,7 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("step", choices=STEPS + ["all"])
     ap.add_argument("--from", dest="from_step", choices=STEPS, help="all: start at this step (earlier ones done)")
-    ap.add_argument("--quick", action="store_true", help="a few seconds per recording, output to analysis-v2-quick")
+    ap.add_argument("--quick", action="store_true", help="a few seconds per recording, output to analysis-v4-quick")
     ap.add_argument("--takes", nargs="*", help="default: all takes")
     ap.add_argument("--families", nargs="*", help="pipeline families (default: all)")
     ap.add_argument("--workers", type=int, default=4)

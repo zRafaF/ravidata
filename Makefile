@@ -1,8 +1,8 @@
 # RAVIDATA — every command of the project. Python is managed by uv (https://docs.astral.sh/uv/);
 # `make` and `git` are the only other things a machine needs (`apt-get install -y make` on a fresh pod).
 # Code: https://github.com/zRafaF/ravidata   Data: https://huggingface.co/datasets/DoninhaD/ravidata
-.PHONY: help install test rec rec-sim align pack calib targets data data-all data-analysis dataset dataset-upload hf-status hf-patch hf-release \
-        maps fuse static-depth static-depth-refit viz analysis analysis-quick plots an-tags an-extrinsic an-truth \
+.PHONY: analysis-tail help install test rec rec-sim align pack calib targets data data-all data-analysis dataset dataset-upload hf-status hf-patch hf-release \
+        maps fuse static-depth static-depth-refit viz analysis analysis-quick analysis-from-truth paper-figures plots an-tags an-extrinsic an-truth \
         an-sensor an-eval an-opt an-eval-tuned an-floor an-ablation story report play pod pod-test pod-status pod-watch pod-setup pod-data pod-frames pod-check pod-run pod-upload pod-stop pod-clean
 
 HF_REPO ?= DoninhaD/ravidata
@@ -65,19 +65,23 @@ help:
 	@echo "  make viz              3D viewer of the maps in the browser: whole take, one window, two windows,"
 	@echo "                        compare models, measure (VIZ_ARGS=\"--model vggt --take outdoor_course\"): docs/maps.md"
 	@echo ""
-	@echo "  radar analyses (CPU; tables, figures, videos in results/analysis-v2, kept in git): docs/analysis.md"
+	@echo "  radar analyses (CPU; tables, figures, videos in results/analysis-v4, kept in git): docs/analysis.md"
 	@echo "  make analysis-quick   every step on a few seconds of each recording (~6 min), + plots, to"
-	@echo "                        results/analysis-v2-quick: run this first after any change"
+	@echo "                        results/analysis-v4-quick: run this first after any change"
 	@echo "  make analysis         every step, full data, in order (hours: see docs/analysis.md);"
 	@echo "                        FROM=truth starts there (the steps before it already done)"
 	@echo "  make an-tags an-extrinsic an-truth an-sensor an-eval an-ablation an-opt an-eval-tuned an-floor"
 	@echo "                        one step (QUICK=1 for its quick version)"
+	@echo "  make analysis-from-truth   (after a change to the maps / ground truth) truth and every later step into"
+	@echo "                        results/$$RUN_TO (default analysis-v5), reusing tags + calibration of RUN_FROM (~1.5 h)"
+	@echo "  make paper-figures    every thesis figure: data from results/FIG_RUN (default analysis-v4) -> the thesis"
+	@echo "                        repo (THESIS=../../UTFPR/tcc1), compiled to THESIS/figures/out (png + pdf)"
 	@echo "  make plots            figures from the existing tables only (seconds); QUICK=1 for the quick tables"
 	@echo "  make story            explanatory figures (how the truth is built, radar range-time maps with the truth)"
-	@echo "  make report           results/analysis-v2/REPORT.md: every number as Markdown tables"
+	@echo "  make report           results/analysis-v4/REPORT.md: every number as Markdown tables"
 	@echo "  make play REC=indoor_course/01_D1_tcc-1d-40mm START=20 SECONDS=15 PLAY_FAMILIES=\"ca_cfar grid\""
 	@echo "                        video of one recording: camera + instantaneous radar heatmap + detections + truth"
-	@echo "                        (PLAY_ARGS=\"--gif --bg empty --params tuned_pooled\"); results/analysis-v2/videos/"
+	@echo "                        (PLAY_ARGS=\"--gif --bg empty --params tuned_pooled\"); results/analysis-v4/videos/"
 	@echo "  variables: AN_TAKES='static_pass1 ...' FAMILIES='thr grid ...' TRIALS=$(TRIALS) PROTOCOL=$(PROTOCOL)"
 	@echo "             (strict | pooled | both) WORKERS=$(WORKERS) TAG_STEP=$(TAG_STEP) MAP_MODEL=$(MAP_MODEL)"
 
@@ -184,7 +188,7 @@ an-ablation:                           # one stage at a time over a threshold sw
 	$(AN) ablation $(AN_ARGS)
 story:                                 # explanatory figures: how the truth is built, range-time maps
 	$(AN) story $(AN_ARGS)
-report:                                # results/analysis-v2/REPORT.md: every number as tables
+report:                                # results/analysis-v4/REPORT.md: every number as tables
 	$(AN) report $(AN_ARGS)
 an-opt:
 	$(AN) opt $(AN_ARGS)
@@ -206,6 +210,45 @@ analysis:                              # every step, full data, in order
 	$(AN) all $(AN_ARGS)
 analysis-quick:                        # every step on a few seconds per recording, then the figures
 	$(AN) all $(AN_ARGS) --quick --protocol both
+
+# Everything that depends on the map ground truth, into a new results folder (RUN_TO), reusing the AprilTag poses
+# and the radar-camera calibration of RUN_FROM (they do not depend on the maps). Tuning as in analysis-v2: pooled,
+# arc objective, TRIALS trials, TUNE_FAMILIES. About 1.5 h on a 4-core PC.
+RUN_FROM      ?= analysis-v4
+RUN_TO        ?= analysis-v5
+TUNE_FAMILIES ?= thr ca_cfar rd_cfar grid grid_doppler
+AN_BASE = --trials $(TRIALS) --protocol $(PROTOCOL) --workers $(WORKERS) --tag-step $(TAG_STEP) --model $(MAP_MODEL)
+analysis-from-truth: export RAVIDATA_RUN = $(RUN_TO)
+analysis-from-truth:
+	uv run --group analysis python -m analysis.seed $(RUN_FROM)
+	$(AN) truth $(AN_BASE)
+	$(AN) sensor $(AN_BASE)
+	$(AN) eval $(AN_BASE)
+	$(AN) ablation $(AN_BASE)
+	$(AN) opt $(AN_BASE) --objective arc --families $(TUNE_FAMILIES)
+	$(AN) eval-tuned $(AN_BASE) --objective arc --families $(TUNE_FAMILIES)
+	$(AN) floor $(AN_BASE)
+	$(AN) plots $(AN_BASE)
+	$(AN) report $(AN_BASE)
+	$(AN) story $(AN_BASE)
+
+# finish a run that stopped after eval-tuned (e.g. make analysis-tail RUN_TO=analysis-v4)
+analysis-tail: export RAVIDATA_RUN = $(RUN_TO)
+analysis-tail:
+	$(AN) floor $(AN_BASE)
+	$(AN) plots $(AN_BASE)
+	$(AN) report $(AN_BASE)
+	$(AN) story $(AN_BASE)
+
+# The thesis figures: data from results/$(FIG_RUN) (analysis/paper/build.py), copied into the thesis repository, then
+# compiled there by its figures/build.py (Typst) into $(THESIS)/figures/out/*.png / *.pdf.
+FIG_RUN ?= analysis-v4
+THESIS  ?= ../../UTFPR/tcc1
+paper-figures: export RAVIDATA_RUN = $(FIG_RUN)
+paper-figures: export TCC_FIGURES = $(abspath $(THESIS))/figures/data
+paper-figures:
+	uv run --group analysis python -m analysis.paper.build
+	cd "$(THESIS)" && uv run --no-project --with typst python figures/build.py
 
 dataset: install
 	$(UV) run python scripts/hf_dataset.py all

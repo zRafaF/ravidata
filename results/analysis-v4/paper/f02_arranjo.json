@@ -1,0 +1,22 @@
+{
+ "take": "indoor_course",
+ "cam_height_m": 1.4064345192573393,
+ "pitch_down_deg": 19.47624937103606,
+ "cam_dx_cm": 4.0,
+ "ant_spacing_mm": 2.45,
+ "d_over_lambda": 0.497,
+ "cam_half_fov_deg": 28.0,
+ "beam_half_deg": 60.0,
+ "pairs": {
+  "az": [
+   2,
+   1
+  ],
+  "el": [
+   1,
+   0
+  ]
+ },
+ "n_tx": 1,
+ "n_rx": 3
+}

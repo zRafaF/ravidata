@@ -102,7 +102,7 @@ def _phantom_take(take, F, n_max):
     t_kf = tm.t[tm.kf]
     for rec, f, tt, ad, h in C.bar(list(zip(F.rec, F.f, F.t, F.ad, F.radar_h)), desc=f"phantom {take}", unit="frame"):
         i = int(tm.kf[int(np.argmin(np.abs(t_kf - tt)))])
-        P, tk, hh, s_w, t_w, c2w = T.window_cloud(tm, take, tm.owner[i][0], clouds)
+        P, tk, hh, s_w, t_w, c2w, _ = T.window_cloud(tm, take, tm.owner[i][0], clouds)
         if not (t_w.min() - 0.05 <= tt <= t_w.max() + 0.05):
             continue
         Tw = interp_poses(t_w, c2w, np.array([tt]))[0]
@@ -135,7 +135,9 @@ def phantom_table(n_max=200):
     C.save_table(P, "phantom_frames")
     env = {t: ("indoor" if t.startswith("indoor") else "outdoor") for t in C.CARRIED}
     S = []
-    for take, g in P.groupby("take"):
+    # with the ground counted as an obstacle (analysis-v4) there is always something within 2 m, so no frame
+    # qualifies: only the still-radar control rows remain
+    for take, g in (P.groupby("take") if len(P) else []):
         d = g.alarm_r
         S.append(dict(case=f"{take} (carried, tuned CA-CFAR)", env=env[take], frames=len(g),
                       alarm_median=d.median(), alarm_p25=d.quantile(.25), alarm_p75=d.quantile(.75),

@@ -6,7 +6,9 @@ walking corridor (|X| < 0.5 m, 0.3 < Z < 3 m, inside the FOV).
 
 * carried takes: keyframe depth of the feed-forward map (default Pi3X), metric through the AprilTags, moved to the
   radar frame time with the fused trajectory when there is one (else the nearest keyframe within max_dt);
-  'up' from the phone gravity; floor = densest level below the camera; obstacle = more than 0.12 m above the floor.
+  'up' from the phone gravity; floor = lowest substantial level below the camera; obstacle = more than 0.12 m above
+  the floor. The 'arc' truth (what the radar is scored on) is the nearest thing in the beam (+-60 x +-60 deg), the
+  ground included: arc_r = min(arc_obs_r, arc_floor_r), arc_floor_r from the window's floor plane.
   Tags on people / chairs / brooms seen at that moment are added as obstacle points.
 * static takes: the AprilTags on the objects (median over the recording; floor tags are floor), plus the
   static-depth surfaces (derived/static-depth-v1) when that step has been run -> 'truth_complete'.
@@ -26,8 +28,9 @@ H_OBS_MIN, H_OBS_MAX, H_FLOOR_TOL = 0.12, np.inf, 0.06
 # apart is out of scope: a ceiling or a roof in the beam counts as an obstacle, as it does for the radar)
 ARC_HALF_DEG = 60.0          # 'arc' truth: nearest obstacle anywhere in the radar's beam (+-60 deg), any direction
 ARC_WINDOW_S = 4.0           # keyframes of the same map window within +-4 s build the arc truth's local map
-ARC_EL_HALF_DEG = 30.0       # ... within +-30 deg of elevation (the antenna's vertical beam; tables passed at hip
-                             # height 60-80 deg below the radar are not in it)
+ARC_EL_HALF_DEG = 60.0       # ... within +-60 deg of elevation (the datasheet's 120 deg field of view; analysis-v3 and
+                             # before: +-30)
+GROUND_GRID_DEG = 1.0        # ray spacing used to find the nearest ground point inside the beam
 CORRIDOR = dict(half=0.5, z0=0.3, z1=3.0)
 
 
@@ -231,11 +234,13 @@ def run_static(take, tags, rows_s, rows_f, trc):
 
 
 def _emit(rows_s, rows_f, rec, f, t, o_r, o_az, o_el, f_r, cnt, cor_r, src, dt, hf, complete, arc=None):
-    """arc = (nearest obstacle in the radar beam, the same in the camera FOV, nearest floor in the beam) when a
-    wider-than-the-camera truth exists (fused map); else the camera-FOV truth is used and arc_complete = False."""
+    """arc = (nearest thing in the radar beam: obstacle or ground, nearest obstacle in the camera FOV, nearest ground
+    in the beam, nearest obstacle in the beam) when a wider-than-the-camera truth exists (fused map); else the
+    camera-FOV truth is used and arc_complete = False."""
     if arc is None or not np.isfinite(arc[0]) and not np.isfinite(arc[1]):
         near = np.nanmin(o_r) if np.isfinite(o_r).any() else np.nan
-        arc, arc_complete = (near, near, np.nanmin(f_r) if np.isfinite(f_r).any() else np.nan), False
+        fl = np.nanmin(f_r) if np.isfinite(f_r).any() else np.nan
+        arc, arc_complete = (np.nanmin([near, fl]), near, fl, near), False
     else:
         arc_complete = True
     sc = G.sector_centres()
@@ -244,7 +249,8 @@ def _emit(rows_s, rows_f, rec, f, t, o_r, o_az, o_el, f_r, cnt, cor_r, src, dt, 
     rows_f.append(dict(rec=rec.key, take=rec.take, config=rec.config, part=rec.part, f=f, t=t, source=src,
                        dt_kf=dt, covered=bool(np.isfinite(dt)), complete=complete,
                        n_obj=int(np.isfinite(o_r).sum()), corridor_r=cor_r, floor_h=hf, arc_r=arc[0],
-                       arc_r_fov=arc[1], arc_floor_r=arc[2], arc_complete=arc_complete))
+                       arc_r_fov=arc[1], arc_floor_r=arc[2], arc_obs_r=arc[3] if len(arc) > 3 else arc[0],
+                       arc_complete=arc_complete))
 
 
 def label_fused(P, Tkf, up_kf, tile=1.0):
@@ -276,6 +282,22 @@ def label_fused(P, Tkf, up_kf, tile=1.0):
     return hh
 
 
+def ground_range(n_c, h_cam):
+    """Nearest point of the ground plane inside the beam (+-ARC_HALF_DEG x +-ARC_EL_HALF_DEG), from the radar at h_cam
+    above it; n_c = the plane's upward normal in radar (camera) axes. The plane is used, not the map's floor points:
+    the camera never sees the ground right below the radar or behind obstacles, the radar does."""
+    if not (np.isfinite(h_cam) and h_cam > 0):
+        return np.nan
+    a = np.radians(np.arange(-ARC_HALF_DEG, ARC_HALF_DEG + 1e-9, GROUND_GRID_DEG))
+    e = np.radians(np.arange(-ARC_EL_HALF_DEG, ARC_EL_HALF_DEG + 1e-9, GROUND_GRID_DEG))
+    A, E = np.meshgrid(a, e)
+    u = np.stack([np.cos(E) * np.sin(A), -np.sin(E), np.cos(E) * np.cos(A)], -1)   # G.polar's convention
+    down = -(u @ n_c)
+    t = np.where(down > 1e-6, h_cam / np.maximum(down, 1e-6), np.inf)
+    t = t[t >= G.R_MIN]
+    return float(t.min()) if t.size and np.isfinite(t.min()) else np.nan
+
+
 def arc_truth(Q_rad, hh, obs_lo=H_OBS_MIN, obs_hi=H_OBS_MAX):
     """Nearest obstacle in the radar beam (+-ARC_HALF_DEG), in the camera FOV, and nearest floor point."""
     r, az, el = G.polar(Q_rad)
@@ -291,7 +313,7 @@ def window_cloud(tm, take, k, cache=None, stride=8):
     """All keyframes of map window k as one point cloud in the window's frame (window units), with heights above
     the window's floor plane (metres). A window is self-consistent (~1 % in Pi3X), unlike the fused map, whose
     joins can leave ghost surfaces. Returns (P, keyframe time per point, height, metric scale, keyframe times,
-    keyframe c2w)."""
+    keyframe c2w, floor plane (n, d) with height = (P * scale) @ n + d)."""
     if cache is not None and k in cache:
         return cache[k]
     w = tm.window(k)
@@ -308,8 +330,10 @@ def window_cloud(tm, take, k, cache=None, stride=8):
     s_w = tm.metric(k)
     pl = floor_plane(P * s_w, u, h * s_w, G.floor_height(h * s_w - np.median(h * s_w), lo=-3, hi=1)
                      + np.median(h * s_w))
-    hh = (P * s_w) @ pl[0] + pl[1] if pl is not None else h * s_w - np.percentile(h * s_w, 5)
-    out = (P, tk, hh, s_w, tm.t[w["idx"]], w["c2w"])
+    if pl is None:
+        pl = (u, -np.percentile(h * s_w, 5))
+    hh = (P * s_w) @ pl[0] + pl[1]
+    out = (P, tk, hh, s_w, tm.t[w["idx"]], w["c2w"], pl)
     if cache is not None:
         if len(cache) > 2:
             cache.pop(next(iter(cache)))
@@ -374,17 +398,23 @@ def run_carried(take, tags, rows_s, rows_f, rows_scale, trc, model="pi3x", max_d
                 if len(q):
                     extra = G.to_radar(q.groupby("id")[["tx", "ty", "tz"]].median().to_numpy(), trc)
             o_r, o_az, o_el, f_r, cnt, cor_r = summarise(G.to_radar(X, trc), obs, flo, extra)
-            arc = (np.nan, np.nan, np.nan)
+            arc = (np.nan, np.nan, np.nan, np.nan)
             k_own = tm.owner[i][0]
-            P, tk, hh_w, s_w, t_w, c2w_w = window_cloud_(k_own)
+            P, tk, hh_w, s_w, t_w, c2w_w, pl_w = window_cloud_(k_own)
             if t_w.min() - 0.05 <= tt <= t_w.max() + 0.05:            # radar time inside the window
                 Tw = interp_poses(t_w, c2w_w, np.array([tt]))[0]
                 sel = np.abs(tk - tt) <= ARC_WINDOW_S                 # keyframes within +-ARC_WINDOW_S
                 Q = (P[sel] - Tw[:3, 3]) @ Tw[:3, :3] * s_w
                 arc = arc_truth(G.to_radar(Q, trc), hh_w[sel])
+                # the ground counts as an obstacle (any ground in the field of view): nearest ground point from the
+                # window's floor plane, seen from the radar at this instant
+                h_cam = float((Tw[:3, 3] * s_w) @ pl_w[0] + pl_w[1])
+                g_r = ground_range(Tw[:3, :3].T @ pl_w[0], h_cam)
+                arc = (np.nanmin([arc[0], g_r]), arc[1], g_r, arc[0])
                 if extra is not None and len(extra):                  # tagged people / objects seen now
                     re_ = G.polar(extra)[0]
-                    arc = (np.nanmin([arc[0], re_.min()]), np.nanmin([arc[1], re_.min()]), arc[2])
+                    arc = (np.nanmin([arc[0], re_.min()]), np.nanmin([arc[1], re_.min()]), arc[2],
+                           np.nanmin([arc[3], re_.min()]))
             _emit(rows_s, rows_f, rec, f, tt, o_r, o_az, o_el, f_r, cnt, cor_r, f"map:{model}", dt, hf, True, arc)
 
 

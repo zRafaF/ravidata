@@ -46,12 +46,23 @@ class TakeMaps:
     @lru_cache(maxsize=3)
     def window(self, k: int):
         z = np.load(self.wfiles[k])
-        return {"idx": z["idx"], "c2w": z["c2w"].astype(np.float64), "depth": z["depth"], "conf": z["conf"]}
+        return {"idx": z["idx"], "c2w": z["c2w"].astype(np.float64), "depth": z["depth"], "conf": z["conf"],
+                "K": z["K"].astype(np.float64) if "K" in z.files else None}
 
     def depth(self, i: int):
         k, j = self.owner[i]
         w = self.window(k)
         return w["depth"][j].astype(np.float32), w["conf"][j].astype(np.float32), k
+
+    def K_of(self, i: int):
+        """Intrinsics of keyframe i in its depth map's pixels. Pi3X is given the calibrated K (frames_<take>.json),
+        so it uses that K exactly; VGGT, MapAnything and DA3 predict their own K per frame (DA3 at 504 px), and
+        their points must be built with it."""
+        if self.model == "pi3x":
+            return self.K
+        k, j = self.owner[i]
+        Kw = self.window(k)["K"]
+        return self.K if Kw is None else Kw[j]
 
     def points(self, i: int, stride: int = 4, conf_drop: float = 30.0, border: float = 0.03):
         """Camera-frame points (window units) of keyframe i, confidence-filtered, image border dropped."""
@@ -65,12 +76,15 @@ class TakeMaps:
         if ok.sum() > 10 and conf_drop > 0:
             ok &= cf >= np.percentile(cf[ok], conf_drop)
         u, v, z = uu[ok], vv[ok], z[ok]
-        X = np.stack([(u - self.K[0, 2]) / self.K[0, 0] * z, (v - self.K[1, 2]) / self.K[1, 1] * z, z], 1)
+        K = self.K_of(i)
+        X = np.stack([(u - K[0, 2]) / K[0, 0] * z, (v - K[1, 2]) / K[1, 1] * z, z], 1)
         return X.astype(np.float64), k
 
     def depth_at(self, i: int, uv: np.ndarray):
         import cv2
         d, _, _ = self.depth(i)
+        if d.shape[0] != self.res:                 # DA3: 504 px depth for the 518 px frames
+            uv = uv * (d.shape[0] / self.res)
         m = cv2.remap(d, uv[:, 0].astype(np.float32).reshape(-1, 1), uv[:, 1].astype(np.float32).reshape(-1, 1),
                       cv2.INTER_NEAREST, borderValue=np.nan)
         return m.ravel()
@@ -97,13 +111,27 @@ class TakeMaps:
                 rows.append(dict(take=self.take, model=self.model, window=self.owner[i][0], keyframe=i,
                                  id=int(r.id), tag_z=float(r.tz), map_z=dz, ratio=float(r.tz) / dz))
         s = np.full(len(self.wfiles), np.nan)
+        self.scale_src = ["none"] * len(self.wfiles)
         if rows:
             import pandas as pd
             df = pd.DataFrame(rows)
             glob = float(df.ratio.median())
+            tagged = {k: float(q.median()) for k, q in df.groupby("window").ratio if len(q) >= 3}
+            # Windows without enough tags: the window's own scale relative to the others, from the pose graph of the
+            # fused map (window_s: window units -> global units), times one global factor fitted on the tagged
+            # windows. A plain median of all tag ratios ignores that each window of a feed-forward model has its own
+            # scale (outdoors the untagged windows were 27-39 % too short with it).
+            ws = None
+            if self.fused is not None and "window_s" in self.fused and len(self.fused["window_s"]) == len(self.wfiles):
+                ws = np.asarray(self.fused["window_s"], float)
+            g = float(np.median([v / ws[k] for k, v in tagged.items()])) if ws is not None and tagged else None
             for k in range(len(self.wfiles)):
-                q = df[df.window == k].ratio
-                s[k] = float(q.median()) if len(q) >= 3 else glob
+                if k in tagged:
+                    s[k], self.scale_src[k] = tagged[k], "tags"
+                elif g is not None:
+                    s[k], self.scale_src[k] = ws[k] * g, "pose graph"
+                else:
+                    s[k], self.scale_src[k] = glob, "median of all tags"
         self.scale_w = s
         return rows
 

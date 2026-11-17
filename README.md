@@ -89,10 +89,11 @@ Steps write tables; figures are drawn from the tables. See
 
 | folder | status |
 |---|---|
-| `results/analysis-v2` | **current.** Indoor_course time alignment corrected, range / angle calibration from the walking person, balanced arc metric and its constant-answer floor. Run so far: tags, extrinsic, truth, sensor, eval, floor, and the arc-view tuning (pooled, 80 trials, five families). Not yet: ablation, plots, story, report, the plane objective, the strict protocol. |
-| `results/analysis-v1` | superseded, kept as a record (its `FINDINGS.md` and `REPORT.md` are marked so). |
+| `results/analysis-v4` | **current.** The radar is scored on the nearest thing in its ±60°×±60° field of view, the ground included; floor level fixed (desk tops are no longer taken for the floor). All steps: tags and calibration (from v2), truth, sensor, eval, ablation, arc-view tuning (pooled, 80 trials, five families), floor, plots, report, story. |
+| `results/analysis-v2` | superseded: indoor time alignment and radar-camera calibration from the walking person. Kept because v4 reuses its tags and calibration (`analysis.seed`). |
 
-What changed and why: [CHANGELOG.md](CHANGELOG.md). Each folder's `runs.jsonl` lists every step that wrote to it,
+What changed and why: [CHANGELOG.md](CHANGELOG.md). `analysis-v1` (in git history) and `analysis-v3` are not
+kept; their numbers are in the changelog. Each folder's `runs.jsonl` lists every step that wrote to it,
 with its settings and duration.
 
 ## Reproducing the results
@@ -104,21 +105,20 @@ git clone https://github.com/zRafaF/ravidata && cd ravidata
 make install          # uv + the Python environment (uv.lock)
 make test             # unit tests (no data needed)
 make data-analysis    # recordings, Pi3X maps, fused poses, still-take depth -> data/ravidata
-make analysis-quick   # every step on a few seconds per recording -> results/analysis-v2-quick (minutes)
+make analysis-quick   # every step on a few seconds per recording -> results/analysis-v4-quick (minutes)
 ```
 
-Then the full run, with the settings of `results/analysis-v2` (writes into it; set `RAVIDATA_RUN=<name>` to write
+Then the full run, with the settings of `results/analysis-v4` (writes into it; set `RAVIDATA_RUN=<name>` to write
 to `results/<name>` instead and compare):
 
 ```bash
-make an-tags an-extrinsic an-truth an-sensor an-eval
+make an-tags an-extrinsic an-truth an-sensor an-eval an-ablation
 make an-opt an-eval-tuned OBJECTIVE=arc TRIALS=80 FAMILIES="thr ca_cfar rd_cfar grid grid_doppler"
-make an-floor plots report
+make an-floor plots report story
 ```
 
 The Optuna studies in `results/<run>/optuna/` are resumed, not restarted: with the published studies present,
-`an-opt` only rebuilds the tables. To redo the search from scratch, use a new `RAVIDATA_RUN`. A re-run of `an-eval`
-also scores `grid_doppler`, which the published default tables lack (the family was added after that step ran).
+`an-opt` only rebuilds the tables. To redo the search from scratch, use a new `RAVIDATA_RUN`. 
 `make analysis` runs
 every step with the defaults (all families, both objectives, 80 trials: several hours). The analysis needs dataset
 **v1.1** or newer (it carries the indoor_course time-alignment fix in `take.json`) and stops with a message on an
